@@ -113,16 +113,7 @@ body[data-bg="portal"] #bg::after, body[data-bg="portal"] #bg-poker::after {
 .wordmark .st8 { color: var(--gold); }
 .tagline { margin: 0.2rem 0 1.4rem; opacity: 0; animation: fade-in 900ms 550ms ease forwards; max-width: 34ch; }
 
-/* opponent chooser */
-.opp-select { opacity: 0; animation: fade-in 900ms 640ms ease forwards; }
-.stepper { display: inline-flex; align-items: center; gap: 0.9rem; background: rgba(20,48,79,0.55); border: 2px solid var(--gold); border-radius: 999px; padding: 0.35rem 0.6rem; }
-.opp-label { min-width: 12ch; text-align: center; font-size: 0.95rem; }
-.opp-label b { color: var(--gold); font-size: 1.1rem; }
-.step-btn { width: 34px; height: 34px; border-radius: 50%; border: none; background: var(--gold); color: var(--navy-deep); font-size: 1.3rem; font-weight: 900; cursor: pointer; line-height: 1; }
-.step-btn:disabled { opacity: 0.4; cursor: default; }
-.step-btn:not(:disabled):hover { filter: brightness(1.08); }
-
-.mode-select { display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; margin-top: 0.9rem; opacity: 0; animation: fade-in 900ms 760ms ease forwards; }
+.mode-select { display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; margin-top: 0.9rem; opacity: 0; animation: fade-in 900ms 640ms ease forwards; }
 .mode-btn {
   display: flex; flex-direction: column; gap: 0.25rem;
   min-width: 220px; padding: 1rem 1.3rem;
@@ -151,19 +142,6 @@ body[data-bg="golf"] .play-area { background: rgba(10, 28, 18, 0.42); box-shadow
 
 .rail { display: flex; flex-direction: column; gap: 0.7rem; align-items: center; min-width: 160px; }
 
-/* standings panel */
-.standings { width: 100%; background: rgba(20,48,79,0.82); border: 2px solid var(--gold); border-radius: 10px; padding: 0.5rem 0.6rem; }
-.standings-title { font-size: 0.64rem; letter-spacing: 0.12em; opacity: 0.85; text-align: center; margin-bottom: 0.35rem; text-transform: uppercase; }
-.standings-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
-.standing-row { display: grid; grid-template-columns: 1.8rem 1fr auto; align-items: center; gap: 0.4rem; padding: 2px 5px; border-radius: 5px; font-size: 0.82rem; }
-.standing-row .rank { text-align: center; opacity: 0.85; }
-.standing-row .pts { font-weight: 800; color: var(--gold); font-variant-numeric: tabular-nums; }
-.standing-row.you { background: rgba(200,162,74,0.18); }
-.standing-row.you .who { font-weight: 800; }
-.standing-row.playing .who::after { content: " •"; color: #7cc36f; }
-.standings-note { font-size: 0.58rem; opacity: 0.7; text-align: center; margin-top: 0.35rem; font-style: italic; }
-.standings.final { max-width: 320px; margin: 0.4rem auto 0.2rem; }
-.standings.final .standing-row { font-size: 0.95rem; padding: 4px 8px; }
 .rail-label { font-size: 0.62rem; letter-spacing: 0.12em; opacity: 0.75; display: block; text-align: center; }
 .cards-remaining {
   background: var(--navy); border: 2px solid var(--gold); border-radius: 10px;
@@ -235,34 +213,6 @@ body[data-bg="golf"] .play-area { background: rgba(10, 28, 18, 0.42); box-shadow
 .scorecard .hid { color: var(--gold); font-weight: 700; font-size: 0.62rem; }
 .scorecard .strong { color: var(--gold); font-weight: 900; }
 .scorecard .round { font-size: 0.85rem; }
-
-/* ---------- Multi-player scorecard (end-of-round "everyone's scoring") ---------- */
-.multi-scorecard { display: flex; flex-direction: column; align-items: center; gap: 0.6rem; width: 100%; }
-.ms-banner {
-  display: flex; align-items: center; gap: 0.6rem; justify-content: center;
-  background: var(--navy-deep); border: 2px solid var(--gold); border-radius: 8px;
-  padding: 0.35rem 1.2rem; font-family: Georgia, serif; font-weight: 900;
-  letter-spacing: 0.12em; color: var(--cream); text-shadow: 0 2px 0 rgba(0,0,0,0.4);
-}
-.ms-ball {
-  width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0;
-  background-image:
-    radial-gradient(circle at 30% 25%, #fff 0%, #e8e8e8 55%, #c8c8c8 100%),
-    repeating-radial-gradient(circle at 25% 30%, rgba(0,0,0,0.08) 0 1px, transparent 1px 3px);
-  box-shadow: inset -2px -2px 3px rgba(0,0,0,0.25), 2px 3px 0 rgba(0,0,0,0.15);
-}
-.ms-panel { width: 100%; background: rgba(10,28,50,0.55); border: 3px solid var(--gold); border-radius: 14px; padding: 0.8rem; }
-.ms-panel.has-bg { background-size: cover; background-position: center; }
-.ms-panel.has-bg .ms-table th { background: rgba(28,63,110,0.88); }
-.ms-panel.has-bg .ms-table td { background: rgba(10,28,50,0.4); }
-.ms-table-wrap { overflow-x: auto; width: 100%; }
-.ms-table { border-collapse: collapse; margin: 0 auto; font-size: 0.72rem; min-width: 100%; }
-.ms-table th, .ms-table td { border: 1px solid rgba(200,162,74,0.3); padding: 3px 6px; text-align: center; }
-.ms-table th { background: #1c3f6e; color: var(--cream); font-size: 0.62rem; letter-spacing: 0.04em; }
-.ms-name { text-align: left !important; font-weight: 700; min-width: 90px; }
-.ms-total { background: rgba(200,162,74,0.18); font-weight: 900; color: var(--gold); }
-.ms-table tr.ms-you td { background: rgba(200,162,74,0.16); }
-.ms-table tr.ms-you .ms-total { background: rgba(200,162,74,0.32); }
 
 /* ---------- Leaderboard ---------- */
 .lb-link { margin-top: 1.1rem; background: none; border: none; color: var(--cream); font-size: 0.95rem; letter-spacing: 0.06em; cursor: pointer; opacity: 0; animation: fade-in 900ms 860ms ease forwards; text-decoration: underline dotted var(--gold); text-underline-offset: 4px; }

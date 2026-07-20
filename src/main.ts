@@ -1,18 +1,15 @@
 /**
- * App entry: intro → match → end panel. Framework-free; re-renders the game
- * screen from the human player's GameState after each action, with AI
- * opponents advancing in lockstep and a live standings panel.
+ * App entry: intro → solo round → end panel. Framework-free; re-renders the
+ * game screen from the player's GameState after each action.
  */
 
 import { type Cell, GameMode, scoreBoard } from "./engine/index.js";
-import { Match } from "./game/match.js";
+import { GameState } from "./game/gameState.js";
 import { Leaderboard, LocalLeaderboardStore, cleanName, todayISO } from "./game/leaderboard.js";
 import { HandHistory, LocalHandHistoryStore, type HandHistoryEntry } from "./game/handHistory.js";
 import { renderIntro } from "./ui/intro.js";
 import { renderBoard } from "./ui/board.js";
 import { renderScorecard } from "./ui/scorecard.js";
-import { renderStandings } from "./ui/standings.js";
-import { renderMultiScorecard } from "./ui/multiScorecard.js";
 import { renderLeaderboardScreen, promptForName, promptPlayAgain } from "./ui/leaderboard.js";
 import { cardFace, cardLabel } from "./ui/cards.js";
 import { mountCourseBackground } from "./ui/courseBackground.js";
@@ -39,31 +36,28 @@ function clear(): void {
   app.replaceChildren();
 }
 
-function start(mode: GameMode, opponents: number): void {
-  const match = new Match(mode, opponents);
-  renderGame(match);
+function start(mode: GameMode): void {
+  const game = new GameState(mode);
+  renderGame(game, mode);
 }
 
-function renderGame(match: Match): void {
+function renderGame(game: GameState, mode: GameMode): void {
   clear();
-  const game = match.human.state;
-  document.body.dataset.bg = match.mode === GameMode.GolfMode ? "golf" : "poker";
+  document.body.dataset.bg = mode === GameMode.GolfMode ? "golf" : "poker";
   const snap = game.snapshot();
-  const score = scoreBoard(snap.board, match.mode);
+  const score = scoreBoard(snap.board, mode);
 
   const screen = document.createElement("div");
   screen.className = "screen game";
 
-  screen.appendChild(renderScorecard(score, match.mode));
+  screen.appendChild(renderScorecard(score, mode));
 
   const main = document.createElement("div");
   main.className = "play-area";
 
-  // left rail: standings, next card, PASS, cards remaining
+  // left rail: next card, PASS, cards remaining
   const rail = document.createElement("aside");
   rail.className = "rail";
-
-  rail.appendChild(renderStandings(match.standings(), match.mode));
 
   const nextWrap = document.createElement("div");
   nextWrap.className = "next-card";
@@ -82,8 +76,8 @@ function renderGame(match: Match): void {
   passBtn.disabled = snap.isOver;
   passBtn.addEventListener("click", () => {
     if (!game.isOver) {
-      match.humanPass();
-      renderGame(match);
+      game.pass();
+      renderGame(game, mode);
     }
   });
   rail.appendChild(passBtn);
@@ -95,8 +89,8 @@ function renderGame(match: Match): void {
 
   const board = renderBoard(game, {
     onPlace: (cell: Cell) => {
-      match.humanPlace(cell);
-      renderGame(match);
+      game.place(cell);
+      renderGame(game, mode);
     },
   });
 
@@ -104,7 +98,7 @@ function renderGame(match: Match): void {
   screen.appendChild(main);
   app.appendChild(screen);
 
-  if (match.isOver) showEndPanel(match);
+  if (game.isOver) showEndPanel(game, mode);
 }
 
 /** Show an overlay panel; call `next()` on the first keypress or click. */
@@ -130,11 +124,11 @@ function showOverlay(build: (panel: HTMLElement) => void, next: () => void, wide
 /**
  * The single completed hand with the best result, plus its top 2 cards.
  * "Best" means highest points in PokerStr8ts but fewest strokes in Golf,
- * matching the direction already used for AI decisions and standings.
+ * matching the direction already used elsewhere.
  */
 function bestHand(
   score: ReturnType<typeof scoreBoard>,
-  completions: Match["human"]["state"]["handCompletions"],
+  completions: GameState["handCompletions"],
   mode: GameMode,
 ): { handName: string; points: number; topCards: number[] } | null {
   const complete = score.hands.filter((h) => h.complete);
@@ -145,21 +139,18 @@ function bestHand(
   return { handName: top.handName, points: top.points, topCards: rec?.topCards ?? [] };
 }
 
-// Stage 1: your own scorecard — the same HOLE/PAR/SCORE grid shown during
-// play — centered on screen, plus a best-hand callout.
-function showEndPanel(match: Match): void {
-  const rank = match.humanRank();
-  const total = match.ais.length + 1;
-  const heading = rank === 1 ? "You win! 🏆" : `You placed ${ordinal(rank)} of ${total}`;
-  const score = scoreBoard(match.human.state.snapshot().board, match.mode);
-  const best = bestHand(score, match.human.state.handCompletions, match.mode);
+// Your own scorecard — the same HOLE/PAR/SCORE grid shown during play —
+// centered on screen, plus a best-hand callout.
+function showEndPanel(game: GameState, mode: GameMode): void {
+  const score = scoreBoard(game.snapshot().board, mode);
+  const best = bestHand(score, game.handCompletions, mode);
 
   showOverlay((panel) => {
     const h2 = document.createElement("h2");
-    h2.textContent = heading;
+    h2.textContent = "Round complete!";
     panel.appendChild(h2);
 
-    panel.appendChild(renderScorecard(score, match.mode));
+    panel.appendChild(renderScorecard(score, mode));
 
     if (best) {
       const stat = document.createElement("p");
@@ -175,57 +166,39 @@ function showEndPanel(match: Match): void {
     hint.className = "end-hint";
     hint.textContent = "Press any key to continue";
     panel.appendChild(hint);
-  }, () => showFinalStandings(match), true);
+  }, () => void continueAfterRound(game, mode), true);
 }
 
-// Stage 2: everyone's scoring — the same grid, one row per player, ranked
-// best to worst to match the "final standings" already announced.
-function showFinalStandings(match: Match): void {
-  const players = [match.human, ...match.ais];
-  const rows = match.standings().map((s) => {
-    const p = players.find((pl) => pl.name === s.name)!;
-    return { name: p.name, isHuman: p.isHuman, board: p.state.snapshot().board };
-  });
-
-  showOverlay((panel) => {
-    const h2 = document.createElement("h2");
-    h2.textContent = "Final Standings";
-    panel.appendChild(h2);
-    panel.appendChild(renderMultiScorecard(rows, match.mode));
-    const hint = document.createElement("p");
-    hint.className = "end-hint";
-    hint.textContent = "Press any key to continue";
-    panel.appendChild(hint);
-  }, () => void continueAfterRound(match), true);
-}
-
-// Persist the human's top-2-cards-per-hand history, submit their score to the
+// Persist the player's top-2-cards-per-hand history, submit their score to the
 // persistent leaderboard, then show the leaderboard and ask to play again.
-async function continueAfterRound(match: Match): Promise<void> {
-  const humanScore = scoreBoard(match.human.state.snapshot().board, match.mode).round;
+async function continueAfterRound(game: GameState, mode: GameMode): Promise<void> {
+  const humanScore = scoreBoard(game.snapshot().board, mode).round;
   let highlight: Parameters<typeof renderLeaderboardScreen>[0]["highlight"];
   let playerName = "You";
-  if (await leaderboard.wouldQualify(humanScore, match.mode)) {
-    const name = await promptForName(match.humanRank());
+  if (await leaderboard.wouldQualify(humanScore, mode)) {
+    const board = await leaderboard.top(mode);
+    const golf = mode === GameMode.GolfMode;
+    const projectedRank = board.filter((e) => (golf ? e.score < humanScore : e.score > humanScore)).length + 1;
+    const name = await promptForName(projectedRank);
     if (name !== null) {
       playerName = cleanName(name);
-      const entry = { name: playerName, score: humanScore, mode: match.mode, date: todayISO() };
+      const entry = { name: playerName, score: humanScore, mode, date: todayISO() };
       const result = await leaderboard.submit(entry);
       if (result.qualified) highlight = entry;
     }
   }
 
   const date = todayISO();
-  const records: HandHistoryEntry[] = match.human.state.handCompletions.map((h) => ({
+  const records: HandHistoryEntry[] = game.handCompletions.map((h) => ({
     playerName,
-    mode: match.mode,
+    mode,
     date,
     hole: h.hole,
     topCards: h.topCards,
   }));
   void handHistory.appendMany(records);
 
-  showLeaderboardWith(match.mode, highlight);
+  showLeaderboardWith(mode, highlight);
   if (await promptPlayAgain()) showIntro();
 }
 
@@ -233,12 +206,6 @@ function showLeaderboardWith(mode: GameMode, highlight: Parameters<typeof render
   clear();
   document.body.dataset.bg = "intro";
   app.appendChild(renderLeaderboardScreen({ leaderboard, mode, highlight, onBack: showIntro }));
-}
-
-function ordinal(n: number): string {
-  const s = ["th", "st", "nd", "rd"];
-  const v = n % 100;
-  return n + (s[(v - 20) % 10] ?? s[v] ?? s[0]!);
 }
 
 // keyboard: P = pass

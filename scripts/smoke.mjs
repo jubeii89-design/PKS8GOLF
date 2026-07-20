@@ -110,17 +110,10 @@ const pokerBgIntro = Number(await page.locator("#bg-poker").evaluate((el) => get
 assert(pokerBgIntro < 0.05, `poker table hidden on intro (opacity ${pokerBgIntro})`);
 await page.screenshot({ path: `${OUT}/bg-intro.png` });
 
-// --- Opponent chooser (defaults to 3) ---
-assert(await page.locator(".opp-select .stepper").count() === 1, "opponent chooser present");
-assert(/3 AI opponents/.test(await page.locator(".opp-label").innerText()), "defaults to 3 opponents");
-await page.locator(".step-btn", { hasText: "+" }).click();
-assert(/4 AI opponents/.test(await page.locator(".opp-label").innerText()), "opponent count increments to 4");
-
-// --- Golf mode shows the course full-strength (with 4 opponents) ---
+// --- Golf mode shows the course full-strength ---
 await page.locator(".mode-btn:not(.primary)").click(); // Golf
 await page.waitForSelector(".board");
 assert(await page.getAttribute("body", "data-bg") === "golf", "golf sets body[data-bg=golf]");
-assert(await page.locator(".standings-list .standing-row").count() === 5, "golf standings shows you + 4 AI");
 await page.waitForTimeout(1200); // let the opacity transition settle
 const golfOpacity = Number(await page.locator("#bg").evaluate((el) => getComputedStyle(el).opacity));
 assert(golfOpacity > 0.9, `course visible in golf mode (opacity ${golfOpacity})`);
@@ -139,16 +132,13 @@ assert(pokerOpacity < 0.05, `course hidden in poker mode (opacity ${pokerOpacity
 const pokerTableOpacity = Number(await page.locator("#bg-poker").evaluate((el) => getComputedStyle(el).opacity));
 assert(pokerTableOpacity > 0.9, `poker table visible in poker mode (opacity ${pokerTableOpacity})`);
 assert(await page.locator(".grid").count() === 2, "two grids render");
-assert(await page.locator(".standings-list .standing-row").count() === 4, "poker standings shows you + 3 AI");
-assert(await page.locator(".standing-row.you").count() === 1, "human row highlighted in standings");
 const preplaced = await page.locator(".board .card:not(.card-empty)").count();
 assert(preplaced === 6, `6 cards auto-placed at start (got ${preplaced})`);
 assert(await page.locator(".pass-btn").isVisible(), "PASS button visible");
 const remainStart = await page.locator(".remain-value").innerText();
 assert(remainStart === "41", `cards remaining starts at 41 (got ${remainStart})`);
 
-// --- Place one card; the human's counter ticks and AIs advance in lockstep ---
-const aiScoresBefore = await page.locator(".standings-list .standing-row:not(.you) .pts").allInnerTexts();
+// --- Place one card; the counter ticks ---
 await page.locator(".card-empty.placeable").first().click();
 await page.waitForTimeout(50);
 assert(await page.locator(".board .card:not(.card-empty)").count() === 7, "placing adds a card to the board");
@@ -172,26 +162,14 @@ assert(await page.locator(".overlay").count() > 0, "end panel appears when the r
 assert(await page.locator(".board .card:not(.card-empty)").count() === 36, "all 36 cells filled at completion");
 assert(await page.locator(".score-box").count() === 0, "strokes/score box removed from the rail");
 
-// --- Stage 1: your own scorecard (same grid shown during play), centered on screen ---
-assert(await page.locator(".overlay .end-panel.wide").count() === 1, "stage 1 panel is the wide variant");
+// --- End panel: your own scorecard (same grid shown during play), centered on screen ---
+assert(await page.locator(".overlay .end-panel.wide").count() === 1, "end panel is the wide variant");
+assert((await page.locator(".overlay .end-panel h2").innerText()) === "Round complete!", "end panel heading is Round complete!");
 assert(await page.locator(".end-hint").count() === 1, "press-any-key hint shown on the personal scorecard panel");
 const roundCell = await page.locator(".screen.game .scorecard .round").innerText();
 const overlayRound = await page.locator(".overlay .scorecard .round").innerText();
 assert(overlayRound === roundCell, `personal scorecard round (${overlayRound}) matches the in-game scorecard (${roundCell})`);
 assert(await page.locator(".final-stat").count() === 1, "best-hand stat shown alongside the personal scorecard");
-await page.screenshot({ path: `${OUT}/smoke-stats.png` });
-
-// --- Press any key → Stage 2: everyone's scoring grid, centered on screen ---
-await page.keyboard.press("Enter");
-await page.waitForSelector(".multi-scorecard");
-assert(
-  (await page.locator(".overlay .end-panel h2").innerText()) === "Final Standings",
-  "stage 2 heading is Final Standings",
-);
-const msRows = await page.locator(".ms-table tr").count(); // header + 4 players
-assert(msRows === 5, `everyone's-scoring grid has header + 4 player rows (got ${msRows})`);
-const youTotal = await page.locator(".ms-table tr.ms-you .ms-total").innerText();
-assert(youTotal === roundCell, `human total in the multi-scorecard (${youTotal}) matches the round (${roundCell})`);
 await page.screenshot({ path: `${OUT}/smoke-complete.png`, fullPage: true });
 
 // --- Press any key → qualifying finish → name prompt → submit ---
@@ -233,10 +211,6 @@ if (usesSkin) {
 } else {
   assert(await page.locator(".lb-table tr.lb-hi").count() === 1, "the new entry is highlighted");
   assert(roundCell === (await page.locator(".lb-table tr.lb-hi .lb-score").innerText()), "leaderboard score matches the round");
-}
-// AI names never appear as leaderboard entries (human-only)
-for (const ai of ["Leonidas", "Ajax", "Helena", "Cyrus"]) {
-  assert(!lbNames.includes(ai), `AI '${ai}' is NOT on the leaderboard`);
 }
 
 // --- Play-again prompt appears automatically after the leaderboard ---

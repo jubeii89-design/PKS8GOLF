@@ -1,0 +1,30 @@
+name: CI
+
+# Validates every pull request against main: typecheck, unit tests, and a
+# production build. Deployment is handled separately by deploy.yml.
+on:
+  pull_request:
+    branches:
+      - main
+
+# Cancel a PR's in-flight run when it gets new commits.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

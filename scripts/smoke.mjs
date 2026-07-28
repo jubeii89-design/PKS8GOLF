@@ -204,20 +204,32 @@ assert(overlayRound === tourneyRound, `personal scorecard round (${overlayRound}
 assert(await page.locator(".final-stat").count() === 1, "best-hand stat shown alongside the personal scorecard");
 await page.screenshot({ path: `${OUT}/smoke-complete.png`, fullPage: true });
 
-// --- Tournament finish shows round standings instead of prompting for a name ---
+// --- Tournament finish shows the field on the signboard, not a name prompt ---
 await page.keyboard.press("Enter");
-await page.waitForSelector(".standings");
+await page.waitForSelector(".leaderboard-screen");
+// A committed public/assets/leaderboard.* image swaps the wooden signpost for
+// an image-skinned board; both render the same tournament rows.
+const usesSkin = (await page.locator(".lb-skin-board").count()) === 1;
+if (usesSkin) {
+  assert(true, "standings render on the image-skinned tournament board");
+  assert(await page.locator(".lb-skin-row").count() > 1, "skinned board lists the field");
+  // The board has only 10 printed slots; the player must never be pushed off it.
+  assert(await page.locator(".lb-skin-row.lb-hi").count() === 1, "the player's own row is on the board and highlighted");
+} else {
+  assert(await page.locator(".lb-signboard").count() === 1, "standings render on the wooden signboard");
+  assert((await page.locator(".lb-title").innerText()) === "Round Standings", "signboard is titled Round Standings");
+  assert(await page.locator(".lb-table tr.lb-hi").count() === 1, "the player's own row is highlighted");
+  assert(await page.locator(".lb-table tr").count() > 2, "signboard lists the whole field");
+}
 assert(
-  /^\d+(st|nd|rd|th) of \d+$/.test(await page.locator(".overlay .end-panel h2").innerText()),
-  `tournament finish shows the player's placing: "${await page.locator(".overlay .end-panel h2").innerText()}"`,
+  /finished \d+(st|nd|rd|th) of \d+/.test(await page.locator(".lb-subtitle").innerText()),
+  `signboard shows the player's placing: "${await page.locator(".lb-subtitle").innerText()}"`,
 );
-const standingRows = await page.locator(".standings-row, .standing-row").count();
-assert(standingRows > 1, `standings list the whole field (got ${standingRows} rows)`);
-assert(await page.locator(".standing-row.you").count() === 1, "the player's own row is highlighted");
 assert(
-  (await page.locator(".standings-note").innerText()).includes("DEMO DATA"),
+  (await page.locator(".lb-mock").innerText()).includes("DEMO DATA"),
   "mock standings are clearly marked as demo data",
 );
+assert(await page.locator(".lb-warning").count() === 0, "no warning shown when the score was delivered");
 assert(await page.locator(".name-prompt").count() === 0, "tournament round never asks for a name");
 assert(posted.length === 1, `exactly one score POSTed (got ${posted.length})`);
 assert(posted[0].playerCode === "123456789012345", `POST carries the player code: ${posted[0].playerCode}`);
@@ -254,7 +266,7 @@ assert(
   `the last logged score matches the final round (${moved[moved.length - 1].scoreAfter} vs ${tourneyRound})`,
 );
 await page.screenshot({ path: `${OUT}/smoke-tournament.png` });
-await page.keyboard.press("Enter"); // back to intro
+await page.locator(".lb-back").click(); // Done → back to intro
 
 // --- Practice round: Golf scoring, and nothing is recorded anywhere ---
 await page.waitForSelector(".mode-select");

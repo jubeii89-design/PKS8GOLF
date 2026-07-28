@@ -27,6 +27,12 @@ export function isValidPlayerCode(raw: string): boolean {
   return /^\d{15}$/.test(raw.trim());
 }
 
+/** Today's date as YYYY-MM-DD (local). */
+export function todayISO(d = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 function readQueue(): ScoreReport[] {
   try {
     const parsed = JSON.parse(localStorage.getItem(QUEUE_KEY) || "[]");

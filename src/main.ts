@@ -5,15 +5,13 @@
 
 import { type Cell, GameMode, scoreBoard } from "./engine/index.js";
 import { GameState } from "./game/gameState.js";
-import { todayISO } from "./game/leaderboard.js";
 import { renderIntro } from "./ui/intro.js";
 import { renderBoard } from "./ui/board.js";
 import { renderScorecard } from "./ui/scorecard.js";
-import { promptForPlayerCode } from "./ui/leaderboard.js";
-import { flushPendingScores } from "./game/tournament.js";
+import { promptForPlayerCode, renderTournamentBoard } from "./ui/leaderboard.js";
+import { flushPendingScores, todayISO } from "./game/tournament.js";
 import { flushMoves, recordMove } from "./game/moveLog.js";
 import { MockTournamentService, type JoinResult, type LeaderboardRow, type Player } from "./game/tournamentService.js";
-import { renderStandings } from "./ui/standings.js";
 import { cardFace, cardLabel } from "./ui/cards.js";
 import { mountCourseBackground } from "./ui/courseBackground.js";
 import { mountPokerTableBackground } from "./ui/pokerTableBackground.js";
@@ -293,44 +291,25 @@ function ordinal(n: number): string {
 }
 
 /**
- * End of a tournament round: where the player placed in the field, plus
- * whether their score actually reached the scoring server.
+ * End of a tournament round: the field on the signboard, with the player's
+ * placing and a warning if their score has not reached the server yet.
  */
 function showRoundStandings(score: number, delivered: boolean, rows: LeaderboardRow[]): void {
   const you = rows.find((r) => r.isYou);
-  showOverlay((panel) => {
-    const h2 = document.createElement("h2");
-    h2.textContent = you ? `${ordinal(you.rank)} of ${rows.length}` : "Round complete";
-    panel.appendChild(h2);
-
-    const stat = document.createElement("p");
-    stat.className = "final-stat";
-    stat.textContent = `Your round: ${score}`;
-    panel.appendChild(stat);
-
-    panel.appendChild(renderStandings(rows, { mock: tournament.isMock }));
-
-    if (!delivered) {
-      const warn = document.createElement("p");
-      warn.textContent =
-        "No connection to the scoring server. Your score is saved on this device and sends automatically next time the game opens — tell a tournament official.";
-      panel.appendChild(warn);
-    }
-
-    const hint = document.createElement("p");
-    hint.className = "end-hint";
-    hint.textContent = "Press any key to continue";
-    panel.appendChild(hint);
-  }, showIntro);
+  clear();
+  document.body.dataset.bg = "intro";
+  app.appendChild(
+    renderTournamentBoard({
+      rows,
+      subtitle: you ? `You finished ${ordinal(you.rank)} of ${rows.length} with ${score}` : `Your round: ${score}`,
+      warning: delivered
+        ? undefined
+        : "Your score has not reached the scoring server yet. It is saved on this device and sends automatically — tell a tournament official.",
+      mock: tournament.isMock,
+      onBack: showIntro,
+    }),
+  );
 }
-
-// keyboard: P = pass
-document.addEventListener("keydown", (e) => {
-  if (e.key.toLowerCase() === "p") {
-    const btn = document.querySelector<HTMLButtonElement>(".pass-btn");
-    if (btn && !btn.disabled) btn.click();
-  }
-});
 
 function showIntro(): void {
   clear();

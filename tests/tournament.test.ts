@@ -8,6 +8,7 @@ import {
 } from "../src/game/tournament.js";
 import { MockTournamentService } from "../src/game/tournamentService.js";
 import { flushMoves, recordMove, pendingMoveCount, type MoveEvent } from "../src/game/moveLog.js";
+import { visibleRows } from "../src/ui/leaderboard.js";
 
 // Minimal in-memory stand-ins; the module reads these off globalThis.
 const store = new Map<string, string>();
@@ -188,5 +189,31 @@ describe("move audit trail", () => {
     (globalThis as any).fetch = vi.fn(async () => ({ ok: true }));
     for (let i = 0; i < 10; i++) recordMove(move(i));
     await vi.waitFor(() => expect(pendingMoveCount()).toBe(0));
+  });
+});
+
+describe("board visibility", () => {
+  const row = (playerName: string, rank: number, isYou = false) => ({ playerName, score: 100 - rank, rank, isYou });
+  const field = (n: number) => Array.from({ length: n }, (_, i) => row(`P${i}`, i + 1));
+
+  it("shows the whole field when it fits", () => {
+    const rows = field(5);
+    expect(visibleRows(rows, 10)).toHaveLength(5);
+  });
+
+  it("keeps the top N when the player is already in it", () => {
+    const rows = [...field(3), row("You", 4, true), ...field(20)];
+    const shown = visibleRows(rows, 10);
+    expect(shown).toHaveLength(10);
+    expect(shown.some((r) => r.isYou)).toBe(true);
+  });
+
+  // A player who cannot find themselves has no idea how they did.
+  it("swaps in the player's row when they fall outside the visible top", () => {
+    const rows = [...field(20), row("You", 21, true)];
+    const shown = visibleRows(rows, 10);
+    expect(shown).toHaveLength(10);
+    expect(shown[9]!.isYou).toBe(true);
+    expect(shown.slice(0, 9).every((r) => !r.isYou)).toBe(true);
   });
 });

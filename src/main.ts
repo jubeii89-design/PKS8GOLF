@@ -11,7 +11,9 @@ import { renderIntro } from "./ui/intro.js";
 import { renderBoard } from "./ui/board.js";
 import { renderScorecard } from "./ui/scorecard.js";
 import { renderLeaderboardScreen, promptForName, promptPlayAgain, promptForPlayerCode } from "./ui/leaderboard.js";
-import { flushPendingScores, reportScore } from "./game/tournament.js";
+import { flushPendingScores } from "./game/tournament.js";
+import { MockTournamentService, type JoinResult, type LeaderboardRow, type Player } from "./game/tournamentService.js";
+import { renderStandings } from "./ui/standings.js";
 import { cardFace, cardLabel } from "./ui/cards.js";
 import { mountCourseBackground } from "./ui/courseBackground.js";
 import { mountPokerTableBackground } from "./ui/pokerTableBackground.js";
@@ -33,6 +35,10 @@ initDesignOverrides();
 const leaderboard = new Leaderboard(new LocalLeaderboardStore());
 const handHistory = new HandHistory(new LocalHandHistoryStore());
 
+// Swap for a real HTTP-backed TournamentService once the backend exists —
+// nothing below this line changes when you do.
+const tournament = new MockTournamentService();
+
 // Retry any tournament scores stranded by an earlier connection drop.
 void flushPendingScores();
 
@@ -45,16 +51,50 @@ function start(mode: GameMode): void {
   renderGame(game, mode);
 }
 
-/** Tournament: 15-digit code, then one scored round reported to the endpoint. */
+/** Tournament: 15-digit code → tee-off check → one scored, reported round. */
 async function startTournament(): Promise<void> {
-  const playerCode = await promptForPlayerCode();
-  if (playerCode === null) return;
+  const code = await promptForPlayerCode();
+  if (code === null) return;
+
+  const join = await tournament.join(code);
+  if (!join.ok) {
+    showJoinRejected(join);
+    return;
+  }
   const mode = GameMode.PokerStraightsMode;
-  renderGame(new GameState(mode), mode, playerCode);
+  renderGame(new GameState(mode), mode, join);
 }
 
-/** `playerCode` set = tournament round: score is reported, not name-prompted. */
-function renderGame(game: GameState, mode: GameMode, playerCode?: string): void {
+/** Code rejected at the door — wrong code, missed tee-off, or no server. */
+function showJoinRejected(join: Extract<JoinResult, { ok: false }>): void {
+  const reasons = {
+    "missed-tee-time": "Your tee-off time has passed, so this code can no longer join. See a tournament official.",
+    "unknown-code": "That code was not recognised. Check the digits and try again.",
+    offline: "Could not reach the tournament server. Try again in a moment.",
+  };
+  showOverlay((panel) => {
+    const h2 = document.createElement("h2");
+    h2.textContent = "Cannot join";
+    const p = document.createElement("p");
+    p.textContent = reasons[join.reason];
+    panel.append(h2, p);
+
+    if (join.teeTime) {
+      const tee = document.createElement("p");
+      tee.className = "final-stat";
+      tee.textContent = `Tee-off was ${new Date(join.teeTime).toLocaleTimeString()}`;
+      panel.appendChild(tee);
+    }
+
+    const hint = document.createElement("p");
+    hint.className = "end-hint";
+    hint.textContent = "Press any key to continue";
+    panel.appendChild(hint);
+  }, showIntro);
+}
+
+/** `player` set = tournament round: score is reported, not name-prompted. */
+function renderGame(game: GameState, mode: GameMode, player?: Player): void {
   clear();
   document.body.dataset.bg = mode === GameMode.GolfMode ? "golf" : "poker";
   const snap = game.snapshot();
@@ -90,7 +130,7 @@ function renderGame(game: GameState, mode: GameMode, playerCode?: string): void 
   passBtn.addEventListener("click", () => {
     if (!game.isOver) {
       game.pass();
-      renderGame(game, mode, playerCode);
+      renderGame(game, mode, player);
     }
   });
   rail.appendChild(passBtn);
@@ -103,7 +143,7 @@ function renderGame(game: GameState, mode: GameMode, playerCode?: string): void 
   const board = renderBoard(game, {
     onPlace: (cell: Cell) => {
       game.place(cell);
-      renderGame(game, mode, playerCode);
+      renderGame(game, mode, player);
     },
   });
 
@@ -111,7 +151,7 @@ function renderGame(game: GameState, mode: GameMode, playerCode?: string): void 
   screen.appendChild(main);
   app.appendChild(screen);
 
-  if (game.isOver) showEndPanel(game, mode, playerCode);
+  if (game.isOver) showEndPanel(game, mode, player);
 }
 
 /** Show an overlay panel; call `next()` on the first keypress or click. */
@@ -154,7 +194,7 @@ function bestHand(
 
 // Your own scorecard — the same HOLE/PAR/SCORE grid shown during play —
 // centered on screen, plus a best-hand callout.
-function showEndPanel(game: GameState, mode: GameMode, playerCode?: string): void {
+function showEndPanel(game: GameState, mode: GameMode, player?: Player): void {
   const score = scoreBoard(game.snapshot().board, mode);
   const best = bestHand(score, game.handCompletions, mode);
 
@@ -179,19 +219,27 @@ function showEndPanel(game: GameState, mode: GameMode, playerCode?: string): voi
     hint.className = "end-hint";
     hint.textContent = "Press any key to continue";
     panel.appendChild(hint);
-  }, () => void continueAfterRound(game, mode, playerCode), true);
+  }, () => void continueAfterRound(game, mode, player), true);
 }
 
 // Persist the player's top-2-cards-per-hand history, submit their score to the
 // persistent leaderboard, then show the leaderboard and ask to play again.
-async function continueAfterRound(game: GameState, mode: GameMode, playerCode?: string): Promise<void> {
+async function continueAfterRound(game: GameState, mode: GameMode, player?: Player): Promise<void> {
   const humanScore = scoreBoard(game.snapshot().board, mode).round;
 
   // Tournament: the code is the identity, so there is no name prompt and no
-  // local leaderboard — the score goes to the endpoint and the round is done.
-  if (playerCode) {
-    const delivered = await reportScore({ playerCode, score: humanScore, mode, date: todayISO() });
-    showScoreReported(humanScore, delivered);
+  // local leaderboard — the score is submitted and the field is shown.
+  if (player) {
+    const delivered = await tournament.submitRound({
+      tournamentId: player.tournamentId,
+      playerCode: player.playerCode,
+      playerName: player.playerName,
+      score: humanScore,
+      mode,
+      date: todayISO(),
+    });
+    const rows = await tournament.leaderboard(player.tournamentId, player.playerCode);
+    showRoundStandings(humanScore, delivered, rows);
     return;
   }
 
@@ -224,17 +272,29 @@ async function continueAfterRound(game: GameState, mode: GameMode, playerCode?: 
   if (await promptPlayAgain()) showIntro();
 }
 
-/** Tournament confirmation — the player must know whether the score got through. */
-function showScoreReported(score: number, delivered: boolean): void {
+function ordinal(n: number): string {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] ?? s[v] ?? s[0]!);
+}
+
+/**
+ * End of a tournament round: where the player placed in the field, plus
+ * whether their score actually reached the scoring server.
+ */
+function showRoundStandings(score: number, delivered: boolean, rows: LeaderboardRow[]): void {
+  const you = rows.find((r) => r.isYou);
   showOverlay((panel) => {
     const h2 = document.createElement("h2");
-    h2.textContent = delivered ? "Score reported ✅" : "Score saved — not yet sent ⚠️";
+    h2.textContent = you ? `${ordinal(you.rank)} of ${rows.length}` : "Round complete";
     panel.appendChild(h2);
 
     const stat = document.createElement("p");
     stat.className = "final-stat";
     stat.textContent = `Your round: ${score}`;
     panel.appendChild(stat);
+
+    panel.appendChild(renderStandings(rows, { mock: tournament.isMock }));
 
     if (!delivered) {
       const warn = document.createElement("p");
@@ -247,7 +307,7 @@ function showScoreReported(score: number, delivered: boolean): void {
     hint.className = "end-hint";
     hint.textContent = "Press any key to continue";
     panel.appendChild(hint);
-  }, showIntro, true);
+  }, showIntro);
 }
 
 function showLeaderboardWith(mode: GameMode, highlight: Parameters<typeof renderLeaderboardScreen>[0]["highlight"]): void {

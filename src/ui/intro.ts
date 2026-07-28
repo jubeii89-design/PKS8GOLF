@@ -52,7 +52,7 @@ export function renderIntro(
     t.addEventListener("click", () => onTournament());
     modes.appendChild(t);
   }
-  modes.appendChild(makeBtn("Golf", "Par & strokes — chase a low round.", GameMode.GolfMode));
+  modes.appendChild(makeBtn("Practice", "Golf scoring — warm up before you tee off.", GameMode.GolfMode));
 
   screen.append(home, presents, crest(), wordmark, tagline, modes);
 

@@ -198,12 +198,19 @@ assert(overlayRound === tourneyRound, `personal scorecard round (${overlayRound}
 assert(await page.locator(".final-stat").count() === 1, "best-hand stat shown alongside the personal scorecard");
 await page.screenshot({ path: `${OUT}/smoke-complete.png`, fullPage: true });
 
-// --- Tournament finish reports the score instead of prompting for a name ---
+// --- Tournament finish shows round standings instead of prompting for a name ---
 await page.keyboard.press("Enter");
-await page.waitForSelector(".overlay .end-panel h2");
+await page.waitForSelector(".standings");
 assert(
-  (await page.locator(".overlay .end-panel h2").innerText()).startsWith("Score reported"),
-  "tournament round confirms the score was reported",
+  /^\d+(st|nd|rd|th) of \d+$/.test(await page.locator(".overlay .end-panel h2").innerText()),
+  `tournament finish shows the player's placing: "${await page.locator(".overlay .end-panel h2").innerText()}"`,
+);
+const standingRows = await page.locator(".standings-row, .standing-row").count();
+assert(standingRows > 1, `standings list the whole field (got ${standingRows} rows)`);
+assert(await page.locator(".standing-row.you").count() === 1, "the player's own row is highlighted");
+assert(
+  (await page.locator(".standings-note").innerText()).includes("DEMO DATA"),
+  "mock standings are clearly marked as demo data",
 );
 assert(await page.locator(".name-prompt").count() === 0, "tournament round never asks for a name");
 assert(posted.length === 1, `exactly one score POSTed (got ${posted.length})`);
@@ -212,9 +219,13 @@ assert(posted[0].score === Number(tourneyRound), `POSTed score matches the round
 await page.screenshot({ path: `${OUT}/smoke-tournament.png` });
 await page.keyboard.press("Enter"); // back to intro
 
-// --- Casual Golf round → name prompt → leaderboard (non-tournament path) ---
+// --- Practice round (Golf scoring) → name prompt → leaderboard ---
 await page.waitForSelector(".mode-select");
-await page.locator(".mode-btn:not(.primary)").click(); // Golf
+assert(
+  (await page.locator(".mode-btn:not(.primary) .mode-label").innerText()) === "Practice",
+  "Golf is presented as Practice alongside Tournament",
+);
+await page.locator(".mode-btn:not(.primary)").click(); // Practice (Golf scoring)
 await page.waitForSelector(".board");
 await fastPlayToEnd();
 const roundCell = await page.locator(".screen.game .scorecard .round").innerText();

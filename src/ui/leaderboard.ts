@@ -23,24 +23,19 @@ const LB_SKIN_ROWS_PCT = [32.2, 37.9, 43.5, 49.2, 54.7, 60.3, 65.5, 71.4, 76.9, 
 const LB_SKIN_NAME_X_PCT = 25;
 const LB_SKIN_SCORE_X_PCT = 50;
 
-/**
- * The skinned board has a fixed number of printed slots, so a large field will
- * not fit. Always keep the player's own row on it: if they fall outside the
- * visible top, give up the last slot for theirs. A player who cannot find
- * themselves has no idea how they did.
- */
-export function visibleRows(rows: LeaderboardRow[], limit: number): LeaderboardRow[] {
-  if (rows.length <= limit) return rows;
-  const top = rows.slice(0, limit);
-  if (top.some((r) => r.isYou)) return top;
-  const you = rows.find((r) => r.isYou);
-  return you ? [...rows.slice(0, limit - 1), you] : top;
+/** Rows the wooden signboard shows per page. */
+export const TABLE_PAGE_SIZE = 20;
+
+/** Page holding the player, so they always land on their own page. */
+export function pageOfPlayer(rows: LeaderboardRow[], pageSize: number): number {
+  const i = rows.findIndex((r) => r.isYou);
+  return i < 0 ? 0 : Math.floor(i / pageSize);
 }
 
 /** Render the top rows positioned onto the leaderboard.jpg row/column grid. */
 function renderSkinBoard(container: HTMLElement, rows: LeaderboardRow[]): void {
   container.replaceChildren();
-  visibleRows(rows, LB_SKIN_ROWS_PCT.length).forEach((r, i) => {
+  rows.forEach((r, i) => {
     const row = document.createElement("div");
     row.className = "lb-skin-row" + (r.isYou ? " lb-hi" : "");
     row.style.top = `${LB_SKIN_ROWS_PCT[i]}%`;
@@ -110,6 +105,12 @@ export function renderTournamentBoard(opts: TournamentBoardOpts): HTMLElement {
   screen.className = "screen leaderboard-screen";
   const bg = designOverride("leaderboard");
 
+  // The board shows as many rows as it has slots: the skin image has a fixed
+  // number of printed rows, the drawn signboard is free to show more.
+  const pageSize = bg ? LB_SKIN_ROWS_PCT.length : TABLE_PAGE_SIZE;
+  const pageCount = Math.max(1, Math.ceil(opts.rows.length / pageSize));
+  let page = pageOfPlayer(opts.rows, pageSize);
+
   const back = document.createElement("button");
   back.className = "mode-btn primary lb-back";
   back.innerHTML = `<span class="mode-label">Done</span>`;
@@ -138,6 +139,41 @@ export function renderTournamentBoard(opts: TournamentBoardOpts): HTMLElement {
     return frag;
   };
 
+  // Prev/next arrows, only when the field does not fit on one page.
+  const pager = document.createElement("div");
+  pager.className = "lb-pager";
+  const prev = document.createElement("button");
+  prev.className = "lb-arrow";
+  prev.textContent = "‹";
+  prev.setAttribute("aria-label", "previous page");
+  const next = document.createElement("button");
+  next.className = "lb-arrow";
+  next.textContent = "›";
+  next.setAttribute("aria-label", "next page");
+  const pageLabel = document.createElement("span");
+  pageLabel.className = "lb-page-label";
+  pager.append(prev, pageLabel, next);
+
+  const draw = (into: HTMLElement, render: (el: HTMLElement, rows: LeaderboardRow[]) => void) => {
+    render(into, opts.rows.slice(page * pageSize, (page + 1) * pageSize));
+    pageLabel.textContent = `Page ${page + 1} of ${pageCount}`;
+    prev.disabled = page === 0;
+    next.disabled = page >= pageCount - 1;
+  };
+
+  const mountPager = (parent: HTMLElement, into: HTMLElement, render: (el: HTMLElement, rows: LeaderboardRow[]) => void) => {
+    draw(into, render);
+    if (pageCount > 1) {
+      prev.addEventListener("click", () => {
+        if (page > 0) { page--; draw(into, render); }
+      });
+      next.addEventListener("click", () => {
+        if (page < pageCount - 1) { page++; draw(into, render); }
+      });
+      parent.appendChild(pager);
+    }
+  };
+
   if (bg) {
     // Custom overlay: real name/score data positioned onto the uploaded
     // image's own row/column grid (see LB_SKIN_* above).
@@ -148,9 +184,9 @@ export function renderTournamentBoard(opts: TournamentBoardOpts): HTMLElement {
     board.className = "lb-skin-board";
     board.style.aspectRatio = LB_SKIN_ASPECT;
     board.style.backgroundImage = `url("${bg}")`;
-    renderSkinBoard(board, opts.rows);
     wrap.appendChild(board);
 
+    mountPager(wrap, board, renderSkinBoard);
     wrap.appendChild(notes());
     back.classList.add("lb-skin-back");
     wrap.appendChild(back);
@@ -177,9 +213,9 @@ export function renderTournamentBoard(opts: TournamentBoardOpts): HTMLElement {
 
   const boardBox = document.createElement("div");
   boardBox.className = "lb-board";
-  renderBoard(boardBox, opts.rows);
   panel.appendChild(boardBox);
 
+  mountPager(panel, boardBox, renderBoard);
   panel.appendChild(back);
   signboard.appendChild(panel);
   screen.appendChild(signboard);

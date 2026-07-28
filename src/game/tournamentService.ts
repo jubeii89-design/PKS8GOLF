@@ -124,7 +124,9 @@ function seeded(seed: string): () => number {
 export class MockTournamentService implements TournamentService {
   readonly isMock = true;
 
-  constructor(private readonly fieldSize = 12) {}
+  // Default field is deliberately larger than one board page so the pager is
+  // exercised in the demo the way a real tournament would exercise it.
+  constructor(private readonly fieldSize = 23) {}
 
   async join(code: string): Promise<JoinResult> {
     const trimmed = code.trim();

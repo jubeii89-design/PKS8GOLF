@@ -213,7 +213,7 @@ const usesSkin = (await page.locator(".lb-skin-board").count()) === 1;
 if (usesSkin) {
   assert(true, "standings render on the image-skinned tournament board");
   assert(await page.locator(".lb-skin-row").count() > 1, "skinned board lists the field");
-  // The board has only 10 printed slots; the player must never be pushed off it.
+  // Paging opens on the player's own page, so their row is always present.
   assert(await page.locator(".lb-skin-row.lb-hi").count() === 1, "the player's own row is on the board and highlighted");
 } else {
   assert(await page.locator(".lb-signboard").count() === 1, "standings render on the wooden signboard");
@@ -230,6 +230,43 @@ assert(
   "mock standings are clearly marked as demo data",
 );
 assert(await page.locator(".lb-warning").count() === 0, "no warning shown when the score was delivered");
+
+// --- Paging: a field bigger than one board page gets arrows ---
+assert(await page.locator(".lb-pager").count() === 1, "a field larger than one page shows the pager");
+const pageLabel = await page.locator(".lb-page-label").innerText();
+assert(/^Page \d+ of \d+$/.test(pageLabel), `pager reports the page position: "${pageLabel}"`);
+const totalPages = Number(pageLabel.split(" ").pop());
+assert(totalPages > 1, `field spans more than one page (got ${totalPages})`);
+const rowSel = usesSkin ? ".lb-skin-row" : ".lb-table tr:not(:first-child)";
+const firstPageRows = await page.locator(rowSel).count();
+const prevArrow = page.locator(".lb-arrow").nth(0);
+const nextArrow = page.locator(".lb-arrow").nth(1);
+// The board opens on the player's own page, which may be the first or last —
+// step whichever direction is actually available from here.
+const goForward = !(await nextArrow.isDisabled());
+assert(
+  goForward || !(await prevArrow.isDisabled()),
+  "at least one arrow is live when the field spans several pages",
+);
+await (goForward ? nextArrow : prevArrow).click();
+await page.waitForTimeout(120);
+assert(
+  (await page.locator(".lb-page-label").innerText()) !== pageLabel,
+  "an arrow moves to another page",
+);
+assert(await page.locator(rowSel).count() > 0, "the other page renders its own rows");
+await (goForward ? prevArrow : nextArrow).click();
+await page.waitForTimeout(120);
+assert(
+  (await page.locator(".lb-page-label").innerText()) === pageLabel,
+  "the opposite arrow returns to the starting page",
+);
+assert(await page.locator(rowSel).count() === firstPageRows, "returning restores the original rows");
+assert(
+  await page.locator(`${rowSel}.lb-hi, .lb-table tr.lb-hi`).count() === 1,
+  "the player's own row is still on their page after paging back",
+);
+await page.screenshot({ path: `${OUT}/smoke-pager.png` });
 assert(await page.locator(".name-prompt").count() === 0, "tournament round never asks for a name");
 assert(posted.length === 1, `exactly one score POSTed (got ${posted.length})`);
 assert(posted[0].playerCode === "123456789012345", `POST carries the player code: ${posted[0].playerCode}`);

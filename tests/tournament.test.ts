@@ -8,7 +8,7 @@ import {
 } from "../src/game/tournament.js";
 import { MockTournamentService } from "../src/game/tournamentService.js";
 import { flushMoves, recordMove, pendingMoveCount, type MoveEvent } from "../src/game/moveLog.js";
-import { visibleRows } from "../src/ui/leaderboard.js";
+import { pageOfPlayer, TABLE_PAGE_SIZE } from "../src/ui/leaderboard.js";
 
 // Minimal in-memory stand-ins; the module reads these off globalThis.
 const store = new Map<string, string>();
@@ -192,28 +192,27 @@ describe("move audit trail", () => {
   });
 });
 
-describe("board visibility", () => {
+describe("board paging", () => {
   const row = (playerName: string, rank: number, isYou = false) => ({ playerName, score: 100 - rank, rank, isYou });
-  const field = (n: number) => Array.from({ length: n }, (_, i) => row(`P${i}`, i + 1));
+  const field = (n: number, from = 0) => Array.from({ length: n }, (_, i) => row(`P${from + i}`, from + i + 1));
 
-  it("shows the whole field when it fits", () => {
-    const rows = field(5);
-    expect(visibleRows(rows, 10)).toHaveLength(5);
+  it("shows 20 rows per page on the signboard", () => {
+    expect(TABLE_PAGE_SIZE).toBe(20);
   });
 
-  it("keeps the top N when the player is already in it", () => {
-    const rows = [...field(3), row("You", 4, true), ...field(20)];
-    const shown = visibleRows(rows, 10);
-    expect(shown).toHaveLength(10);
-    expect(shown.some((r) => r.isYou)).toBe(true);
+  it("starts on page one when the player is near the top", () => {
+    const rows = [...field(3), row("You", 4, true), ...field(90, 4)];
+    expect(pageOfPlayer(rows, 20)).toBe(0);
   });
 
-  // A player who cannot find themselves has no idea how they did.
-  it("swaps in the player's row when they fall outside the visible top", () => {
-    const rows = [...field(20), row("You", 21, true)];
-    const shown = visibleRows(rows, 10);
-    expect(shown).toHaveLength(10);
-    expect(shown[9]!.isYou).toBe(true);
-    expect(shown.slice(0, 9).every((r) => !r.isYou)).toBe(true);
+  // With a 100-player field, landing on page 1 would hide most players from
+  // themselves — the board must open on the page holding their row.
+  it("opens on the page holding the player", () => {
+    const rows = [...field(45), row("You", 46, true), ...field(54, 46)];
+    expect(pageOfPlayer(rows, 20)).toBe(2); // rows 41-60
+  });
+
+  it("falls back to the first page when the player has no row", () => {
+    expect(pageOfPlayer(field(50), 20)).toBe(0);
   });
 });

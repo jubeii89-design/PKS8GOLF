@@ -35,7 +35,11 @@ import time
 import urllib.error
 import urllib.request
 
-ENDPOINT = "https://www.centriko.com/charity/datastream"
+import os
+
+# The live AS400 datastream. Override only for staging or a local test double;
+# production runs against this exact URL.
+ENDPOINT = os.environ.get("AS400_ENDPOINT", "https://www.centriko.com/charity/datastream")
 RECORD_LENGTH = 192
 RETRIES = 3
 BACKOFF_SECONDS = 2

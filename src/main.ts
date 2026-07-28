@@ -3,7 +3,7 @@
  * game screen from the player's GameState after each action.
  */
 
-import { type Cell, GameMode, scoreBoard } from "./engine/index.js";
+import { type Cell, GameMode, allHands, cardAt, scoreBoard } from "./engine/index.js";
 import { GameState } from "./game/gameState.js";
 import { renderIntro } from "./ui/intro.js";
 import { renderBoard } from "./ui/board.js";
@@ -11,6 +11,7 @@ import { renderScorecard } from "./ui/scorecard.js";
 import { promptForPlayerCode, renderTournamentBoard } from "./ui/leaderboard.js";
 import { flushPendingScores, todayISO } from "./game/tournament.js";
 import { flushMoves, recordMove } from "./game/moveLog.js";
+import { reportRound } from "./game/as400.js";
 import { MockTournamentService, type JoinResult, type LeaderboardRow, type Player } from "./game/tournamentService.js";
 import { cardFace, cardLabel } from "./ui/cards.js";
 import { mountCourseBackground } from "./ui/courseBackground.js";
@@ -33,6 +34,10 @@ initDesignOverrides();
 // Swap for a real HTTP-backed TournamentService once the backend exists —
 // nothing below this line changes when you do.
 const tournament = new MockTournamentService();
+
+// Identify this event in the AS400 datastream record.
+const AS400_TOURNAMENT = import.meta.env.VITE_AS400_TOURNAMENT ?? "33267";
+const AS400_CHARITY = import.meta.env.VITE_AS400_CHARITY ?? "CHARITYTEST";
 
 // Retry anything stranded by an earlier connection drop or closed tab.
 void flushPendingScores();
@@ -101,6 +106,22 @@ function logLatestMove(game: GameState, player: Player, mode: GameMode): void {
     scoreAfter: scoreBoard(game.snapshot().board, mode).round,
     ts: new Date().toISOString(),
   });
+}
+
+/** Every card on the board, in hole order, for the AS400 record. */
+function boardCards(board: Parameters<typeof cardAt>[0]): number[] {
+  const seen = new Set<string>();
+  const cards: number[] = [];
+  for (const hand of allHands()) {
+    for (const cell of hand.cells) {
+      const key = `${cell.grid},${cell.col},${cell.row}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const id = cardAt(board, cell);
+      if (id !== null) cards.push(id);
+    }
+  }
+  return cards;
 }
 
 /** Code rejected at the door — wrong code, missed tee-off, or no server. */
@@ -270,8 +291,19 @@ function showEndPanel(game: GameState, mode: GameMode, player?: Player): void {
  * rounds never reach here — a practice score is not recorded anywhere.
  */
 async function reportTournamentRound(game: GameState, mode: GameMode, player: Player): Promise<void> {
-  const roundScore = scoreBoard(game.snapshot().board, mode).round;
+  const board = game.snapshot().board;
+  const score = scoreBoard(board, mode);
+  const roundScore = score.round;
   await flushMoves(); // ship the tail of the audit trail before the score lands
+
+  // The round is finished, so report it to the AS400 datastream.
+  await reportRound({
+    tournament: AS400_TOURNAMENT,
+    charity: AS400_CHARITY,
+    playerId: player.playerCode,
+    score,
+    cards: boardCards(board),
+  });
   const delivered = await tournament.submitRound({
     tournamentId: player.tournamentId,
     playerCode: player.playerCode,

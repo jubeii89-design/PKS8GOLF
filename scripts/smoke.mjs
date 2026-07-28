@@ -128,6 +128,13 @@ await page.route("**/api/score", async (route) => {
   posted.push(JSON.parse(route.request().postData() || "{}"));
   await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
 });
+// AS400 datastream. Intercepted so the test NEVER reaches the live charity
+// endpoint, while still proving the game fires a well-formed record.
+const as400 = [];
+await page.route("**centriko.com/**", async (route) => {
+  as400.push(new URL(route.request().url()).search.slice(1));
+  await route.fulfill({ status: 200, contentType: "text/plain", body: "OK" });
+});
 // Per-move audit trail (stands in for the forensics store).
 const moved = [];
 await page.route("**/api/moves", async (route) => {
@@ -230,6 +237,17 @@ assert(
   "mock standings are clearly marked as demo data",
 );
 assert(await page.locator(".lb-warning").count() === 0, "no warning shown when the score was delivered");
+
+// --- AS400 datastream record fired on the finished round ---
+assert(as400.length === 1, `exactly one AS400 record sent (got ${as400.length})`);
+const rec = decodeURIComponent(as400[0]);
+assert(rec.startsWith("TOURC"), `record starts with the TOURC prefix: "${rec.slice(0, 24)}"`);
+assert(
+  rec.startsWith("TOURC33267CHARITYTEST123456789012345"),
+  `record carries tournament, charity and player id: "${rec.slice(0, 40)}"`,
+);
+assert(/[+-]\d{4}/.test(rec), `record carries a signed score: "${rec}"`);
+assert(rec.length >= 100, `record is a full fixed-width row (got ${rec.length})`);
 
 // --- Paging: a field bigger than one board page gets arrows ---
 assert(await page.locator(".lb-pager").count() === 1, "a field larger than one page shows the pager");

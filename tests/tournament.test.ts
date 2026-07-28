@@ -9,6 +9,7 @@ import {
 import { MockTournamentService } from "../src/game/tournamentService.js";
 import { flushMoves, recordMove, pendingMoveCount, type MoveEvent } from "../src/game/moveLog.js";
 import { pageOfPlayer, TABLE_PAGE_SIZE } from "../src/ui/leaderboard.js";
+import { buildRecord, rankChar, recordUrl, RECORD_LENGTH } from "../src/game/as400.js";
 
 // Minimal in-memory stand-ins; the module reads these off globalThis.
 const store = new Map<string, string>();
@@ -214,5 +215,61 @@ describe("board paging", () => {
 
   it("falls back to the first page when the player has no row", () => {
     expect(pageOfPlayer(field(50), 20)).toBe(0);
+  });
+});
+
+describe("AS400 record", () => {
+  const hand = (handID: string, complete = true) => ({ handID, complete }) as any;
+  const score = (round: number, ids: string[]) =>
+    ({ round, frontNine: 0, backNine: 0, hands: ids.map((i) => hand(i)) }) as any;
+  const ids18 = ["3E","4G","4H","4H","3B","4G","5I","5I","4E","3C","4C","4C","4H","3B","4H","5G","5J","4G"];
+  const base = {
+    tournament: "33267",
+    charity: "CHARITYTEST",
+    playerId: "1111111111",
+    score: score(20978, ids18),
+    cards: Array.from({ length: 36 }, () => 101), // ace of a suit
+  };
+
+  it("is always exactly 192 characters", () => {
+    expect(buildRecord(base)).toHaveLength(RECORD_LENGTH);
+    // Long inputs must truncate, not push later fields out of position.
+    expect(buildRecord({ ...base, charity: "X".repeat(80) })).toHaveLength(RECORD_LENGTH);
+  });
+
+  it("lays out prefix, tournament, charity and player in order", () => {
+    const rec = buildRecord(base);
+    expect(rec.startsWith("TOURC33267CHARITYTEST1111111111")).toBe(true);
+  });
+
+  it("writes all 18 hand IDs, two characters each", () => {
+    const rec = buildRecord(base);
+    const block = rec.slice("TOURC33267CHARITYTEST1111111111".length, "TOURC33267CHARITYTEST1111111111".length + 36);
+    expect(block).toBe(ids18.join(""));
+  });
+
+  it("leaves a blank slot for a hand that never completed", () => {
+    const partial = score(10, ids18.map((i, n) => (n === 4 ? "" : i)));
+    partial.hands[4] = hand("", false);
+    const rec = buildRecord({ ...base, score: partial });
+    expect(rec.slice(31 + 8, 31 + 10)).toBe("  ");
+  });
+
+  // A PokerStr8ts round can finish negative; the sign must survive.
+  it("keeps the sign and width of a negative score", () => {
+    const rec = buildRecord({ ...base, score: score(-42, ids18) });
+    expect(rec).toContain("-0042");
+    expect(buildRecord({ ...base, score: score(7, ids18) })).toContain("+0007");
+  });
+
+  it("encodes each card as one rank character", () => {
+    expect(rankChar(101)).toBe("A"); // rank 1
+    expect(rankChar(110)).toBe("T"); // rank 10
+    expect(rankChar(113)).toBe("K"); // rank 13
+  });
+
+  it("sends to the supplied endpoint unmodified", () => {
+    const url = recordUrl(buildRecord(base));
+    expect(url.startsWith("https://www.centriko.com/charity/datastream?TOURC33267CHARITYTEST")).toBe(true);
   });
 });

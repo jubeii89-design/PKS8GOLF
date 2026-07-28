@@ -5,13 +5,13 @@
 
 import { type Cell, GameMode, scoreBoard } from "./engine/index.js";
 import { GameState } from "./game/gameState.js";
-import { Leaderboard, LocalLeaderboardStore, cleanName, todayISO } from "./game/leaderboard.js";
-import { HandHistory, LocalHandHistoryStore, type HandHistoryEntry } from "./game/handHistory.js";
+import { todayISO } from "./game/leaderboard.js";
 import { renderIntro } from "./ui/intro.js";
 import { renderBoard } from "./ui/board.js";
 import { renderScorecard } from "./ui/scorecard.js";
-import { renderLeaderboardScreen, promptForName, promptPlayAgain, promptForPlayerCode } from "./ui/leaderboard.js";
+import { promptForPlayerCode } from "./ui/leaderboard.js";
 import { flushPendingScores } from "./game/tournament.js";
+import { flushMoves, recordMove } from "./game/moveLog.js";
 import { MockTournamentService, type JoinResult, type LeaderboardRow, type Player } from "./game/tournamentService.js";
 import { renderStandings } from "./ui/standings.js";
 import { cardFace, cardLabel } from "./ui/cards.js";
@@ -32,15 +32,17 @@ if (bgPoker) mountPokerTableBackground(bgPoker);
 mountBackgroundMusic(document.body);
 initDesignOverrides();
 
-const leaderboard = new Leaderboard(new LocalLeaderboardStore());
-const handHistory = new HandHistory(new LocalHandHistoryStore());
-
 // Swap for a real HTTP-backed TournamentService once the backend exists —
 // nothing below this line changes when you do.
 const tournament = new MockTournamentService();
 
-// Retry any tournament scores stranded by an earlier connection drop.
+// Retry anything stranded by an earlier connection drop or closed tab.
 void flushPendingScores();
+void flushMoves();
+
+// Last chance to ship buffered moves when the tab goes away mid-round — the
+// exact case the audit trail exists for.
+window.addEventListener("pagehide", () => void flushMoves());
 
 function clear(): void {
   app.replaceChildren();
@@ -62,7 +64,45 @@ async function startTournament(): Promise<void> {
     return;
   }
   const mode = GameMode.PokerStraightsMode;
-  renderGame(new GameState(mode), mode, join);
+  const game = new GameState(mode);
+  logRoundStart(game, join, mode);
+  renderGame(game, mode, join);
+}
+
+/**
+ * Audit trail. The 6 auto-placed cards are logged first so the round can be
+ * replayed from an empty board; every later move continues the sequence.
+ */
+function logRoundStart(game: GameState, player: Player, mode: GameMode): void {
+  const scoreAfter = scoreBoard(game.snapshot().board, mode).round;
+  game.preplaced.forEach((p, i) => {
+    recordMove({
+      tournamentId: player.tournamentId,
+      playerCode: player.playerCode,
+      seq: i,
+      action: "round-start",
+      card: p.card,
+      cell: p.cell,
+      scoreAfter,
+      ts: new Date().toISOString(),
+    });
+  });
+}
+
+/** Log the move the player just made, with the score it produced. */
+function logLatestMove(game: GameState, player: Player, mode: GameMode): void {
+  const last = game.playLog[game.playLog.length - 1];
+  if (!last) return;
+  recordMove({
+    tournamentId: player.tournamentId,
+    playerCode: player.playerCode,
+    seq: game.preplaced.length + last.seq,
+    action: last.action,
+    card: last.card,
+    cell: last.cell,
+    scoreAfter: scoreBoard(game.snapshot().board, mode).round,
+    ts: new Date().toISOString(),
+  });
 }
 
 /** Code rejected at the door — wrong code, missed tee-off, or no server. */
@@ -130,6 +170,7 @@ function renderGame(game: GameState, mode: GameMode, player?: Player): void {
   passBtn.addEventListener("click", () => {
     if (!game.isOver) {
       game.pass();
+      if (player) logLatestMove(game, player, mode);
       renderGame(game, mode, player);
     }
   });
@@ -143,6 +184,7 @@ function renderGame(game: GameState, mode: GameMode, player?: Player): void {
   const board = renderBoard(game, {
     onPlace: (cell: Cell) => {
       game.place(cell);
+      if (player) logLatestMove(game, player, mode);
       renderGame(game, mode, player);
     },
   });
@@ -219,57 +261,29 @@ function showEndPanel(game: GameState, mode: GameMode, player?: Player): void {
     hint.className = "end-hint";
     hint.textContent = "Press any key to continue";
     panel.appendChild(hint);
-  }, () => void continueAfterRound(game, mode, player), true);
+  }, () => {
+    if (player) void reportTournamentRound(game, mode, player);
+    else showIntro(); // practice: nothing recorded, straight back to the menu
+  }, true);
 }
 
-// Persist the player's top-2-cards-per-hand history, submit their score to the
-// persistent leaderboard, then show the leaderboard and ask to play again.
-async function continueAfterRound(game: GameState, mode: GameMode, player?: Player): Promise<void> {
-  const humanScore = scoreBoard(game.snapshot().board, mode).round;
-
-  // Tournament: the code is the identity, so there is no name prompt and no
-  // local leaderboard — the score is submitted and the field is shown.
-  if (player) {
-    const delivered = await tournament.submitRound({
-      tournamentId: player.tournamentId,
-      playerCode: player.playerCode,
-      playerName: player.playerName,
-      score: humanScore,
-      mode,
-      date: todayISO(),
-    });
-    const rows = await tournament.leaderboard(player.tournamentId, player.playerCode);
-    showRoundStandings(humanScore, delivered, rows);
-    return;
-  }
-
-  let highlight: Parameters<typeof renderLeaderboardScreen>[0]["highlight"];
-  let playerName = "You";
-  if (await leaderboard.wouldQualify(humanScore, mode)) {
-    const board = await leaderboard.top(mode);
-    const golf = mode === GameMode.GolfMode;
-    const projectedRank = board.filter((e) => (golf ? e.score < humanScore : e.score > humanScore)).length + 1;
-    const name = await promptForName(projectedRank);
-    if (name !== null) {
-      playerName = cleanName(name);
-      const entry = { name: playerName, score: humanScore, mode, date: todayISO() };
-      const result = await leaderboard.submit(entry);
-      if (result.qualified) highlight = entry;
-    }
-  }
-
-  const date = todayISO();
-  const records: HandHistoryEntry[] = game.handCompletions.map((h) => ({
-    playerName,
+/**
+ * Tournament round is over: submit the score and show the field. Practice
+ * rounds never reach here — a practice score is not recorded anywhere.
+ */
+async function reportTournamentRound(game: GameState, mode: GameMode, player: Player): Promise<void> {
+  const roundScore = scoreBoard(game.snapshot().board, mode).round;
+  await flushMoves(); // ship the tail of the audit trail before the score lands
+  const delivered = await tournament.submitRound({
+    tournamentId: player.tournamentId,
+    playerCode: player.playerCode,
+    playerName: player.playerName,
+    score: roundScore,
     mode,
-    date,
-    hole: h.hole,
-    topCards: h.topCards,
-  }));
-  void handHistory.appendMany(records);
-
-  showLeaderboardWith(mode, highlight);
-  if (await promptPlayAgain()) showIntro();
+    date: todayISO(),
+  });
+  const rows = await tournament.leaderboard(player.tournamentId, player.playerCode);
+  showRoundStandings(roundScore, delivered, rows);
 }
 
 function ordinal(n: number): string {
@@ -310,12 +324,6 @@ function showRoundStandings(score: number, delivered: boolean, rows: Leaderboard
   }, showIntro);
 }
 
-function showLeaderboardWith(mode: GameMode, highlight: Parameters<typeof renderLeaderboardScreen>[0]["highlight"]): void {
-  clear();
-  document.body.dataset.bg = "intro";
-  app.appendChild(renderLeaderboardScreen({ leaderboard, mode, highlight, onBack: showIntro }));
-}
-
 // keyboard: P = pass
 document.addEventListener("keydown", (e) => {
   if (e.key.toLowerCase() === "p") {
@@ -327,13 +335,8 @@ document.addEventListener("keydown", (e) => {
 function showIntro(): void {
   clear();
   document.body.dataset.bg = "intro";
-  app.appendChild(renderIntro(start, showLeaderboard, () => void startTournament()));
+  app.appendChild(renderIntro(start, () => void startTournament()));
 }
 
-function showLeaderboard(mode: GameMode = GameMode.PokerStraightsMode): void {
-  clear();
-  document.body.dataset.bg = "intro";
-  app.appendChild(renderLeaderboardScreen({ leaderboard, mode, onBack: showIntro }));
-}
 
 showIntro();

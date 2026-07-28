@@ -7,6 +7,7 @@ import {
   reportScore,
 } from "../src/game/tournament.js";
 import { MockTournamentService } from "../src/game/tournamentService.js";
+import { flushMoves, recordMove, pendingMoveCount, type MoveEvent } from "../src/game/moveLog.js";
 
 // Minimal in-memory stand-ins; the module reads these off globalThis.
 const store = new Map<string, string>();
@@ -127,5 +128,65 @@ describe("round standings", () => {
     const rows = await svc.leaderboard("MOCK-TOURNAMENT", "123456789012345");
     expect(rows).toHaveLength(1);
     expect(rows[0]!.score).toBe(55);
+  });
+});
+
+describe("move audit trail", () => {
+  beforeEach(() => {
+    store.clear();
+    vi.useRealTimers();
+  });
+
+  const move = (seq: number): MoveEvent => ({
+    tournamentId: "T1",
+    playerCode: "123456789012345",
+    seq,
+    action: "place",
+    card: 101,
+    cell: { grid: 0, col: 1, row: 1 },
+    scoreAfter: seq,
+    ts: "2026-07-23T00:00:00.000Z",
+  });
+
+  it("buffers moves and clears them once delivered", async () => {
+    (globalThis as any).fetch = vi.fn(async () => ({ ok: true }));
+    recordMove(move(0));
+    expect(pendingMoveCount()).toBe(1);
+    expect(await flushMoves()).toBe(true);
+    expect(pendingMoveCount()).toBe(0);
+  });
+
+  // A round that dies mid-play is exactly why the audit trail exists, so a
+  // failed flush must never discard moves.
+  it("keeps moves buffered when the endpoint is unreachable", async () => {
+    (globalThis as any).fetch = vi.fn(async () => {
+      throw new Error("offline");
+    });
+    recordMove(move(0));
+    recordMove(move(1));
+    expect(await flushMoves()).toBe(false);
+    expect(pendingMoveCount()).toBe(2);
+
+    (globalThis as any).fetch = vi.fn(async () => ({ ok: true }));
+    expect(await flushMoves()).toBe(true);
+    expect(pendingMoveCount()).toBe(0);
+  });
+
+  it("sends every buffered move in one request, in order", async () => {
+    const sent: any[] = [];
+    (globalThis as any).fetch = vi.fn(async (_url: string, init: any) => {
+      sent.push(JSON.parse(init.body));
+      return { ok: true };
+    });
+    for (let i = 0; i < 3; i++) recordMove(move(i));
+    await flushMoves();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].moves.map((m: MoveEvent) => m.seq)).toEqual([0, 1, 2]);
+  });
+
+  it("auto-flushes once the buffer fills", async () => {
+    (globalThis as any).fetch = vi.fn(async () => ({ ok: true }));
+    for (let i = 0; i < 10; i++) recordMove(move(i));
+    await vi.waitFor(() => expect(pendingMoveCount()).toBe(0));
   });
 });

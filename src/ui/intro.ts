@@ -9,7 +9,6 @@ import { crest } from "./crest.js";
 
 export function renderIntro(
   onStart: (mode: GameMode) => void,
-  onLeaderboard?: () => void,
   onTournament?: () => void,
 ): HTMLElement {
   const screen = document.createElement("div");
@@ -55,13 +54,5 @@ export function renderIntro(
   modes.appendChild(makeBtn("Practice", "Golf scoring — warm up before you tee off.", GameMode.GolfMode));
 
   screen.append(home, presents, crest(), wordmark, tagline, modes);
-
-  if (onLeaderboard) {
-    const lbBtn = document.createElement("button");
-    lbBtn.className = "lb-link";
-    lbBtn.innerHTML = "🏆 Leaderboard";
-    lbBtn.addEventListener("click", () => onLeaderboard());
-    screen.appendChild(lbBtn);
-  }
   return screen;
 }

@@ -128,6 +128,12 @@ await page.route("**/api/score", async (route) => {
   posted.push(JSON.parse(route.request().postData() || "{}"));
   await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
 });
+// Per-move audit trail (stands in for the forensics store).
+const moved = [];
+await page.route("**/api/moves", async (route) => {
+  moved.push(...(JSON.parse(route.request().postData() || "{}").moves ?? []));
+  await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+});
 
 await page.reload({ waitUntil: "networkidle" });
 assert(
@@ -216,82 +222,67 @@ assert(await page.locator(".name-prompt").count() === 0, "tournament round never
 assert(posted.length === 1, `exactly one score POSTed (got ${posted.length})`);
 assert(posted[0].playerCode === "123456789012345", `POST carries the player code: ${posted[0].playerCode}`);
 assert(posted[0].score === Number(tourneyRound), `POSTed score matches the round (${posted[0].score} vs ${tourneyRound})`);
+
+// --- Audit trail: every card played is captured, in order, replayable ---
+// 36 cells - 6 auto-placed = 30 placements by the player, plus every pass.
+assert(
+  moved.filter((m) => m.action === "round-start").length === 6,
+  "the 6 auto-placed cards are logged so the round replays from an empty board",
+);
+assert(
+  moved.filter((m) => m.action === "place").length === 30,
+  `every one of the player's 30 placements was logged (got ${moved.filter((m) => m.action === "place").length})`,
+);
+assert(
+  moved.filter((m) => m.action === "pass").length >= 1,
+  "passes are logged too, not just placements",
+);
+assert(
+  moved.every((m) => m.playerCode === "123456789012345" && m.tournamentId),
+  "every move carries the player code and tournament id",
+);
+assert(
+  moved.every((m, i) => m.seq === i),
+  "move sequence numbers are contiguous with no gaps",
+);
+assert(
+  moved.filter((m) => m.action === "place").every((m) => m.cell && typeof m.card === "number"),
+  "each placement records which card went into which cell",
+);
+assert(
+  moved[moved.length - 1].scoreAfter === Number(tourneyRound),
+  `the last logged score matches the final round (${moved[moved.length - 1].scoreAfter} vs ${tourneyRound})`,
+);
 await page.screenshot({ path: `${OUT}/smoke-tournament.png` });
 await page.keyboard.press("Enter"); // back to intro
 
-// --- Practice round (Golf scoring) → name prompt → leaderboard ---
+// --- Practice round: Golf scoring, and nothing is recorded anywhere ---
 await page.waitForSelector(".mode-select");
 assert(
   (await page.locator(".mode-btn:not(.primary) .mode-label").innerText()) === "Practice",
   "Golf is presented as Practice alongside Tournament",
 );
+assert(await page.locator(".lb-link").count() === 0, "no leaderboard link — practice scores are not kept");
+const postsBeforePractice = posted.length;
+const movesBeforePractice = moved.length;
+
 await page.locator(".mode-btn:not(.primary)").click(); // Practice (Golf scoring)
 await page.waitForSelector(".board");
+assert(await page.getAttribute("body", "data-bg") === "golf", "practice uses golf scoring");
 await fastPlayToEnd();
-const roundCell = await page.locator(".screen.game .scorecard .round").innerText();
-
-// --- Press any key → qualifying finish → name prompt → submit ---
+assert(await page.locator(".overlay .end-panel").count() === 1, "practice shows its own scorecard at the end");
 await page.keyboard.press("Enter");
-await page.waitForSelector(".name-prompt");
-assert(await page.locator(".name-prompt .name-input").count() === 1, "name prompt appears on a qualifying finish");
-await page.locator(".name-prompt .name-input").fill("TESTER");
-await page.locator(".name-prompt .mode-btn.primary").click();
-await page.waitForSelector(".leaderboard-screen");
-// A committed public/assets/leaderboard.* image switches the board to a
-// custom image-skinned overlay instead of the built-in wooden signboard.
-const lbUsesSkin = async () => (await page.locator(".lb-skin-board").count()) === 1;
-let usesSkin = await lbUsesSkin();
-if (usesSkin) {
-  assert(await page.locator(".lb-skin-board").count() === 1, "leaderboard renders as a custom image-skinned board");
-} else {
-  assert(await page.locator(".lb-signboard").count() === 1, "leaderboard renders as a signboard");
-  assert(await page.locator(".lb-sign-svg-el").count() === 1, "wooden signpost SVG (two posts) is mounted");
-}
 
-// --- Per-hand top-2-card history persisted to the "database" (localStorage) ---
-const handHistory = await page.evaluate(() => JSON.parse(localStorage.getItem("pokerst8ts.handHistory.v1") || "[]"));
-assert(handHistory.length === 18, `all 18 completed hands recorded (got ${handHistory.length})`);
-assert(
-  handHistory.every((h) => h.playerName === "TESTER" && Array.isArray(h.topCards) && h.topCards.length <= 2),
-  "each hand record has the submitted name and up to 2 top cards",
+await page.waitForSelector(".mode-select");
+assert(await page.locator(".name-prompt").count() === 0, "practice never asks for a name");
+assert(await page.locator(".standings").count() === 0, "practice never shows tournament standings");
+assert(posted.length === postsBeforePractice, "practice reports no score");
+assert(moved.length === movesBeforePractice, "practice logs no moves");
+const stored = await page.evaluate(() =>
+  Object.keys(localStorage).filter((k) => k.includes("leaderboard") || k.includes("handHistory")),
 );
-
-const lbNames = usesSkin
-  ? await page.locator(".lb-skin-name").allInnerTexts()
-  : await page.locator(".lb-table .lb-name").allInnerTexts();
-assert(lbNames.includes("TESTER"), `submitted score shows on the leaderboard: ${JSON.stringify(lbNames)}`);
-if (usesSkin) {
-  assert(await page.locator(".lb-skin-row.lb-hi").count() === 1, "the new entry is highlighted");
-  assert(
-    roundCell === (await page.locator(".lb-skin-row.lb-hi .lb-skin-score").innerText()),
-    "leaderboard score matches the round",
-  );
-} else {
-  assert(await page.locator(".lb-table tr.lb-hi").count() === 1, "the new entry is highlighted");
-  assert(roundCell === (await page.locator(".lb-table tr.lb-hi .lb-score").innerText()), "leaderboard score matches the round");
-}
-
-// --- Play-again prompt appears automatically after the leaderboard ---
-await page.waitForSelector(".play-again-prompt");
-assert((await page.locator(".play-again-prompt h2").innerText()) === "Play again?", "play-again prompt appears");
-await page.screenshot({ path: `${OUT}/smoke-play-again.png` });
-await page.locator(".play-again-prompt .mode-btn:not(.primary)").click(); // No — stay on the leaderboard
-assert(await page.locator(".play-again-prompt").count() === 0, "play-again prompt closes on No");
-await page.screenshot({ path: `${OUT}/smoke-leaderboard.png` });
-
-// --- Persistence across a full page reload (localStorage) ---
-await page.reload({ waitUntil: "networkidle" });
-await page.waitForTimeout(950);
-await page.locator(".lb-link").click();
-await page.waitForSelector(".leaderboard-screen");
-// The casual round is Golf, so switch off the default Poker board.
-await page.locator(".lb-toggle button", { hasText: "Golf" }).click();
-await page.waitForTimeout(100);
-usesSkin = await lbUsesSkin();
-const afterReload = usesSkin
-  ? await page.locator(".lb-skin-name").allInnerTexts()
-  : await page.locator(".lb-table .lb-name").allInnerTexts();
-assert(afterReload.includes("TESTER"), `score persists across reload: ${JSON.stringify(afterReload)}`);
+assert(stored.length === 0, `practice writes nothing to storage (found ${JSON.stringify(stored)})`);
+await page.screenshot({ path: `${OUT}/smoke-practice.png` });
 
 assert(errors.length === 0, `no page/console errors (${errors.length}): ${errors.slice(0, 3).join(" | ")}`);
 

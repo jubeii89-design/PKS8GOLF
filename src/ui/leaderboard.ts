@@ -6,6 +6,7 @@
 
 import { GameMode } from "../engine/index.js";
 import { type Leaderboard, type LeaderboardEntry } from "../game/leaderboard.js";
+import { isValidPlayerCode } from "../game/tournament.js";
 import { leaderboardSignSVG } from "./leaderboardSign.js";
 import { designOverride } from "./designOverrides.js";
 
@@ -265,6 +266,71 @@ export function promptForName(rank: number): Promise<string | null> {
     document.getElementById("app")!.appendChild(overlay);
     input.focus();
     input.select();
+  });
+}
+
+/**
+ * Tournament entry: asks for the player's 15-digit code. Resolves with the
+ * code, or null if they back out. Start stays disabled until 15 digits are in.
+ */
+export function promptForPlayerCode(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "overlay";
+    const panel = document.createElement("div");
+    // name-prompt carries the shared input styling; code-prompt is the hook.
+    panel.className = "end-panel name-prompt code-prompt";
+
+    const h = document.createElement("h2");
+    h.textContent = "Tournament";
+    const p = document.createElement("p");
+    p.textContent = "Enter your 15-digit player code:";
+
+    const input = document.createElement("input");
+    input.className = "name-input";
+    input.inputMode = "numeric";
+    input.autocomplete = "off";
+    input.maxLength = 15;
+    input.placeholder = "···············";
+
+    const count = document.createElement("div");
+    count.className = "code-count";
+
+    const row = document.createElement("div");
+    row.className = "name-actions";
+    const start = document.createElement("button");
+    start.className = "mode-btn primary";
+    start.innerHTML = `<span class="mode-label">Start</span>`;
+    const cancel = document.createElement("button");
+    cancel.className = "mode-btn";
+    cancel.innerHTML = `<span class="mode-label">Cancel</span>`;
+    row.append(start, cancel);
+
+    // Digits only; Start unlocks at exactly 15.
+    const sync = () => {
+      input.value = input.value.replace(/\D/g, "");
+      count.textContent = `${input.value.length} / 15`;
+      start.disabled = !isValidPlayerCode(input.value);
+    };
+    input.addEventListener("input", sync);
+    sync();
+
+    const finish = (value: string | null) => {
+      overlay.remove();
+      resolve(value);
+    };
+    start.addEventListener("click", () => {
+      if (!start.disabled) finish(input.value);
+    });
+    cancel.addEventListener("click", () => finish(null));
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") start.click();
+    });
+
+    panel.append(h, p, input, count, row);
+    overlay.appendChild(panel);
+    document.getElementById("app")!.appendChild(overlay);
+    input.focus();
   });
 }
 

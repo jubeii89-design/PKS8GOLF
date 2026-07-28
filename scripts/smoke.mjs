@@ -121,9 +121,32 @@ const pokerBgGolf = Number(await page.locator("#bg-poker").evaluate((el) => getC
 assert(pokerBgGolf < 0.05, `poker table hidden in golf mode (opacity ${pokerBgGolf})`);
 await page.screenshot({ path: `${OUT}/bg-golf.png` });
 
-// back to intro, then start a PokerStr8ts game (course hidden, felt shows)
+// --- Tournament: 15-digit code → scored round → score reported ---
+// Stub the scoring endpoint (stands in for the AS400 gateway).
+const posted = [];
+await page.route("**/api/score", async (route) => {
+  posted.push(JSON.parse(route.request().postData() || "{}"));
+  await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+});
+
 await page.reload({ waitUntil: "networkidle" });
+assert(
+  (await page.locator(".mode-btn.primary .mode-label").innerText()) === "Tournament",
+  "Tournament has replaced PokerStr8ts as the primary button",
+);
 await page.locator(".mode-btn.primary").click();
+await page.waitForSelector(".code-prompt");
+const codeInput = page.locator(".code-prompt .name-input");
+const codeStart = page.locator(".code-prompt .mode-btn.primary");
+assert(await codeStart.isDisabled(), "Start disabled before a code is entered");
+await codeInput.fill("12345");
+assert(await codeStart.isDisabled(), "Start still disabled on a short code");
+await codeInput.fill("12345678901234x");
+assert((await codeInput.inputValue()) === "12345678901234", "non-digits are stripped from the code");
+assert(await codeStart.isDisabled(), "Start disabled at 14 digits");
+await codeInput.fill("123456789012345");
+assert(!(await codeStart.isDisabled()), "Start enabled at exactly 15 digits");
+await codeStart.click();
 await page.waitForSelector(".board");
 assert(await page.getAttribute("body", "data-bg") === "poker", "poker sets body[data-bg=poker]");
 await page.waitForTimeout(1200);
@@ -150,14 +173,17 @@ await page.waitForTimeout(50);
 assert(await page.locator(".remain-value").innerText() === "39", "counter ticks down on pass");
 
 // --- Fast-play to completion ---
-let guard = 0;
-while (guard++ < 60) {
-  if (await page.locator(".overlay").count() > 0) break;
-  const placeable = page.locator(".card-empty.placeable").first();
-  if (await placeable.count() > 0) await placeable.click();
-  else await page.locator(".pass-btn").click();
-  await page.waitForTimeout(15);
+async function fastPlayToEnd() {
+  let guard = 0;
+  while (guard++ < 60) {
+    if ((await page.locator(".overlay").count()) > 0) break;
+    const placeable = page.locator(".card-empty.placeable").first();
+    if ((await placeable.count()) > 0) await placeable.click();
+    else await page.locator(".pass-btn").click();
+    await page.waitForTimeout(15);
+  }
 }
+await fastPlayToEnd();
 assert(await page.locator(".overlay").count() > 0, "end panel appears when the round completes");
 assert(await page.locator(".board .card:not(.card-empty)").count() === 36, "all 36 cells filled at completion");
 assert(await page.locator(".score-box").count() === 0, "strokes/score box removed from the rail");
@@ -166,11 +192,32 @@ assert(await page.locator(".score-box").count() === 0, "strokes/score box remove
 assert(await page.locator(".overlay .end-panel.wide").count() === 1, "end panel is the wide variant");
 assert((await page.locator(".overlay .end-panel h2").innerText()) === "Round complete!", "end panel heading is Round complete!");
 assert(await page.locator(".end-hint").count() === 1, "press-any-key hint shown on the personal scorecard panel");
-const roundCell = await page.locator(".screen.game .scorecard .round").innerText();
+const tourneyRound = await page.locator(".screen.game .scorecard .round").innerText();
 const overlayRound = await page.locator(".overlay .scorecard .round").innerText();
-assert(overlayRound === roundCell, `personal scorecard round (${overlayRound}) matches the in-game scorecard (${roundCell})`);
+assert(overlayRound === tourneyRound, `personal scorecard round (${overlayRound}) matches the in-game scorecard (${tourneyRound})`);
 assert(await page.locator(".final-stat").count() === 1, "best-hand stat shown alongside the personal scorecard");
 await page.screenshot({ path: `${OUT}/smoke-complete.png`, fullPage: true });
+
+// --- Tournament finish reports the score instead of prompting for a name ---
+await page.keyboard.press("Enter");
+await page.waitForSelector(".overlay .end-panel h2");
+assert(
+  (await page.locator(".overlay .end-panel h2").innerText()).startsWith("Score reported"),
+  "tournament round confirms the score was reported",
+);
+assert(await page.locator(".name-prompt").count() === 0, "tournament round never asks for a name");
+assert(posted.length === 1, `exactly one score POSTed (got ${posted.length})`);
+assert(posted[0].playerCode === "123456789012345", `POST carries the player code: ${posted[0].playerCode}`);
+assert(posted[0].score === Number(tourneyRound), `POSTed score matches the round (${posted[0].score} vs ${tourneyRound})`);
+await page.screenshot({ path: `${OUT}/smoke-tournament.png` });
+await page.keyboard.press("Enter"); // back to intro
+
+// --- Casual Golf round → name prompt → leaderboard (non-tournament path) ---
+await page.waitForSelector(".mode-select");
+await page.locator(".mode-btn:not(.primary)").click(); // Golf
+await page.waitForSelector(".board");
+await fastPlayToEnd();
+const roundCell = await page.locator(".screen.game .scorecard .round").innerText();
 
 // --- Press any key → qualifying finish → name prompt → submit ---
 await page.keyboard.press("Enter");
@@ -226,6 +273,9 @@ await page.reload({ waitUntil: "networkidle" });
 await page.waitForTimeout(950);
 await page.locator(".lb-link").click();
 await page.waitForSelector(".leaderboard-screen");
+// The casual round is Golf, so switch off the default Poker board.
+await page.locator(".lb-toggle button", { hasText: "Golf" }).click();
+await page.waitForTimeout(100);
 usesSkin = await lbUsesSkin();
 const afterReload = usesSkin
   ? await page.locator(".lb-skin-name").allInnerTexts()

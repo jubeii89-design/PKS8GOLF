@@ -10,6 +10,7 @@ import { crest } from "./crest.js";
 export function renderIntro(
   onStart: (mode: GameMode) => void,
   onLeaderboard?: () => void,
+  onTournament?: () => void,
 ): HTMLElement {
   const screen = document.createElement("div");
   screen.className = "screen intro";
@@ -44,7 +45,13 @@ export function renderIntro(
     b.addEventListener("click", () => onStart(mode));
     return b;
   };
-  modes.appendChild(makeBtn("PokerStr8ts", "Score points per hand — chase a high round.", GameMode.PokerStraightsMode, true));
+  if (onTournament) {
+    const t = document.createElement("button");
+    t.className = "mode-btn primary";
+    t.innerHTML = `<span class="mode-label">Tournament</span><span class="mode-sub">Enter your player code — score is reported.</span>`;
+    t.addEventListener("click", () => onTournament());
+    modes.appendChild(t);
+  }
   modes.appendChild(makeBtn("Golf", "Par & strokes — chase a low round.", GameMode.GolfMode));
 
   screen.append(home, presents, crest(), wordmark, tagline, modes);

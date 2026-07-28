@@ -10,7 +10,8 @@ import { HandHistory, LocalHandHistoryStore, type HandHistoryEntry } from "./gam
 import { renderIntro } from "./ui/intro.js";
 import { renderBoard } from "./ui/board.js";
 import { renderScorecard } from "./ui/scorecard.js";
-import { renderLeaderboardScreen, promptForName, promptPlayAgain } from "./ui/leaderboard.js";
+import { renderLeaderboardScreen, promptForName, promptPlayAgain, promptForPlayerCode } from "./ui/leaderboard.js";
+import { flushPendingScores, reportScore } from "./game/tournament.js";
 import { cardFace, cardLabel } from "./ui/cards.js";
 import { mountCourseBackground } from "./ui/courseBackground.js";
 import { mountPokerTableBackground } from "./ui/pokerTableBackground.js";
@@ -32,6 +33,9 @@ initDesignOverrides();
 const leaderboard = new Leaderboard(new LocalLeaderboardStore());
 const handHistory = new HandHistory(new LocalHandHistoryStore());
 
+// Retry any tournament scores stranded by an earlier connection drop.
+void flushPendingScores();
+
 function clear(): void {
   app.replaceChildren();
 }
@@ -41,7 +45,16 @@ function start(mode: GameMode): void {
   renderGame(game, mode);
 }
 
-function renderGame(game: GameState, mode: GameMode): void {
+/** Tournament: 15-digit code, then one scored round reported to the endpoint. */
+async function startTournament(): Promise<void> {
+  const playerCode = await promptForPlayerCode();
+  if (playerCode === null) return;
+  const mode = GameMode.PokerStraightsMode;
+  renderGame(new GameState(mode), mode, playerCode);
+}
+
+/** `playerCode` set = tournament round: score is reported, not name-prompted. */
+function renderGame(game: GameState, mode: GameMode, playerCode?: string): void {
   clear();
   document.body.dataset.bg = mode === GameMode.GolfMode ? "golf" : "poker";
   const snap = game.snapshot();
@@ -77,7 +90,7 @@ function renderGame(game: GameState, mode: GameMode): void {
   passBtn.addEventListener("click", () => {
     if (!game.isOver) {
       game.pass();
-      renderGame(game, mode);
+      renderGame(game, mode, playerCode);
     }
   });
   rail.appendChild(passBtn);
@@ -90,7 +103,7 @@ function renderGame(game: GameState, mode: GameMode): void {
   const board = renderBoard(game, {
     onPlace: (cell: Cell) => {
       game.place(cell);
-      renderGame(game, mode);
+      renderGame(game, mode, playerCode);
     },
   });
 
@@ -98,7 +111,7 @@ function renderGame(game: GameState, mode: GameMode): void {
   screen.appendChild(main);
   app.appendChild(screen);
 
-  if (game.isOver) showEndPanel(game, mode);
+  if (game.isOver) showEndPanel(game, mode, playerCode);
 }
 
 /** Show an overlay panel; call `next()` on the first keypress or click. */
@@ -141,7 +154,7 @@ function bestHand(
 
 // Your own scorecard — the same HOLE/PAR/SCORE grid shown during play —
 // centered on screen, plus a best-hand callout.
-function showEndPanel(game: GameState, mode: GameMode): void {
+function showEndPanel(game: GameState, mode: GameMode, playerCode?: string): void {
   const score = scoreBoard(game.snapshot().board, mode);
   const best = bestHand(score, game.handCompletions, mode);
 
@@ -166,13 +179,22 @@ function showEndPanel(game: GameState, mode: GameMode): void {
     hint.className = "end-hint";
     hint.textContent = "Press any key to continue";
     panel.appendChild(hint);
-  }, () => void continueAfterRound(game, mode), true);
+  }, () => void continueAfterRound(game, mode, playerCode), true);
 }
 
 // Persist the player's top-2-cards-per-hand history, submit their score to the
 // persistent leaderboard, then show the leaderboard and ask to play again.
-async function continueAfterRound(game: GameState, mode: GameMode): Promise<void> {
+async function continueAfterRound(game: GameState, mode: GameMode, playerCode?: string): Promise<void> {
   const humanScore = scoreBoard(game.snapshot().board, mode).round;
+
+  // Tournament: the code is the identity, so there is no name prompt and no
+  // local leaderboard — the score goes to the endpoint and the round is done.
+  if (playerCode) {
+    const delivered = await reportScore({ playerCode, score: humanScore, mode, date: todayISO() });
+    showScoreReported(humanScore, delivered);
+    return;
+  }
+
   let highlight: Parameters<typeof renderLeaderboardScreen>[0]["highlight"];
   let playerName = "You";
   if (await leaderboard.wouldQualify(humanScore, mode)) {
@@ -202,6 +224,32 @@ async function continueAfterRound(game: GameState, mode: GameMode): Promise<void
   if (await promptPlayAgain()) showIntro();
 }
 
+/** Tournament confirmation — the player must know whether the score got through. */
+function showScoreReported(score: number, delivered: boolean): void {
+  showOverlay((panel) => {
+    const h2 = document.createElement("h2");
+    h2.textContent = delivered ? "Score reported ✅" : "Score saved — not yet sent ⚠️";
+    panel.appendChild(h2);
+
+    const stat = document.createElement("p");
+    stat.className = "final-stat";
+    stat.textContent = `Your round: ${score}`;
+    panel.appendChild(stat);
+
+    if (!delivered) {
+      const warn = document.createElement("p");
+      warn.textContent =
+        "No connection to the scoring server. Your score is saved on this device and sends automatically next time the game opens — tell a tournament official.";
+      panel.appendChild(warn);
+    }
+
+    const hint = document.createElement("p");
+    hint.className = "end-hint";
+    hint.textContent = "Press any key to continue";
+    panel.appendChild(hint);
+  }, showIntro, true);
+}
+
 function showLeaderboardWith(mode: GameMode, highlight: Parameters<typeof renderLeaderboardScreen>[0]["highlight"]): void {
   clear();
   document.body.dataset.bg = "intro";
@@ -219,7 +267,7 @@ document.addEventListener("keydown", (e) => {
 function showIntro(): void {
   clear();
   document.body.dataset.bg = "intro";
-  app.appendChild(renderIntro(start, showLeaderboard));
+  app.appendChild(renderIntro(start, showLeaderboard, () => void startTournament()));
 }
 
 function showLeaderboard(mode: GameMode = GameMode.PokerStraightsMode): void {

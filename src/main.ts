@@ -3,14 +3,16 @@
  * game screen from the player's GameState after each action.
  */
 
-import { type Cell, GameMode, scoreBoard } from "./engine/index.js";
+import { type Cell, GameMode, allHands, cardAt, scoreBoard } from "./engine/index.js";
 import { GameState } from "./game/gameState.js";
-import { Leaderboard, LocalLeaderboardStore, cleanName, todayISO } from "./game/leaderboard.js";
-import { HandHistory, LocalHandHistoryStore, type HandHistoryEntry } from "./game/handHistory.js";
 import { renderIntro } from "./ui/intro.js";
 import { renderBoard } from "./ui/board.js";
 import { renderScorecard } from "./ui/scorecard.js";
-import { renderLeaderboardScreen, promptForName, promptPlayAgain } from "./ui/leaderboard.js";
+import { promptForPlayerCode, renderTournamentBoard } from "./ui/leaderboard.js";
+import { flushPendingScores, todayISO } from "./game/tournament.js";
+import { flushMoves, recordMove } from "./game/moveLog.js";
+import { reportRound } from "./game/as400.js";
+import { MockTournamentService, type JoinResult, type LeaderboardRow, type Player } from "./game/tournamentService.js";
 import { cardFace, cardLabel } from "./ui/cards.js";
 import { mountCourseBackground } from "./ui/courseBackground.js";
 import { mountPokerTableBackground } from "./ui/pokerTableBackground.js";
@@ -29,8 +31,21 @@ if (bgPoker) mountPokerTableBackground(bgPoker);
 mountBackgroundMusic(document.body);
 initDesignOverrides();
 
-const leaderboard = new Leaderboard(new LocalLeaderboardStore());
-const handHistory = new HandHistory(new LocalHandHistoryStore());
+// Swap for a real HTTP-backed TournamentService once the backend exists —
+// nothing below this line changes when you do.
+const tournament = new MockTournamentService();
+
+// Identify this event in the AS400 datastream record.
+const AS400_TOURNAMENT = import.meta.env.VITE_AS400_TOURNAMENT ?? "33267";
+const AS400_CHARITY = import.meta.env.VITE_AS400_CHARITY ?? "CHARITYTEST";
+
+// Retry anything stranded by an earlier connection drop or closed tab.
+void flushPendingScores();
+void flushMoves();
+
+// Last chance to ship buffered moves when the tab goes away mid-round — the
+// exact case the audit trail exists for.
+window.addEventListener("pagehide", () => void flushMoves());
 
 function clear(): void {
   app.replaceChildren();
@@ -41,7 +56,104 @@ function start(mode: GameMode): void {
   renderGame(game, mode);
 }
 
-function renderGame(game: GameState, mode: GameMode): void {
+/** Tournament: 15-digit code → tee-off check → one scored, reported round. */
+async function startTournament(): Promise<void> {
+  const code = await promptForPlayerCode();
+  if (code === null) return;
+
+  const join = await tournament.join(code);
+  if (!join.ok) {
+    showJoinRejected(join);
+    return;
+  }
+  const mode = GameMode.PokerStraightsMode;
+  const game = new GameState(mode);
+  logRoundStart(game, join, mode);
+  renderGame(game, mode, join);
+}
+
+/**
+ * Audit trail. The 6 auto-placed cards are logged first so the round can be
+ * replayed from an empty board; every later move continues the sequence.
+ */
+function logRoundStart(game: GameState, player: Player, mode: GameMode): void {
+  const scoreAfter = scoreBoard(game.snapshot().board, mode).round;
+  game.preplaced.forEach((p, i) => {
+    recordMove({
+      tournamentId: player.tournamentId,
+      playerCode: player.playerCode,
+      seq: i,
+      action: "round-start",
+      card: p.card,
+      cell: p.cell,
+      scoreAfter,
+      ts: new Date().toISOString(),
+    });
+  });
+}
+
+/** Log the move the player just made, with the score it produced. */
+function logLatestMove(game: GameState, player: Player, mode: GameMode): void {
+  const last = game.playLog[game.playLog.length - 1];
+  if (!last) return;
+  recordMove({
+    tournamentId: player.tournamentId,
+    playerCode: player.playerCode,
+    seq: game.preplaced.length + last.seq,
+    action: last.action,
+    card: last.card,
+    cell: last.cell,
+    scoreAfter: scoreBoard(game.snapshot().board, mode).round,
+    ts: new Date().toISOString(),
+  });
+}
+
+/** Every card on the board, in hole order, for the AS400 record. */
+function boardCards(board: Parameters<typeof cardAt>[0]): number[] {
+  const seen = new Set<string>();
+  const cards: number[] = [];
+  for (const hand of allHands()) {
+    for (const cell of hand.cells) {
+      const key = `${cell.grid},${cell.col},${cell.row}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const id = cardAt(board, cell);
+      if (id !== null) cards.push(id);
+    }
+  }
+  return cards;
+}
+
+/** Code rejected at the door — wrong code, missed tee-off, or no server. */
+function showJoinRejected(join: Extract<JoinResult, { ok: false }>): void {
+  const reasons = {
+    "missed-tee-time": "Your tee-off time has passed, so this code can no longer join. See a tournament official.",
+    "unknown-code": "That code was not recognised. Check the digits and try again.",
+    offline: "Could not reach the tournament server. Try again in a moment.",
+  };
+  showOverlay((panel) => {
+    const h2 = document.createElement("h2");
+    h2.textContent = "Cannot join";
+    const p = document.createElement("p");
+    p.textContent = reasons[join.reason];
+    panel.append(h2, p);
+
+    if (join.teeTime) {
+      const tee = document.createElement("p");
+      tee.className = "final-stat";
+      tee.textContent = `Tee-off was ${new Date(join.teeTime).toLocaleTimeString()}`;
+      panel.appendChild(tee);
+    }
+
+    const hint = document.createElement("p");
+    hint.className = "end-hint";
+    hint.textContent = "Press any key to continue";
+    panel.appendChild(hint);
+  }, showIntro);
+}
+
+/** `player` set = tournament round: score is reported, not name-prompted. */
+function renderGame(game: GameState, mode: GameMode, player?: Player): void {
   clear();
   document.body.dataset.bg = mode === GameMode.GolfMode ? "golf" : "poker";
   const snap = game.snapshot();
@@ -77,7 +189,8 @@ function renderGame(game: GameState, mode: GameMode): void {
   passBtn.addEventListener("click", () => {
     if (!game.isOver) {
       game.pass();
-      renderGame(game, mode);
+      if (player) logLatestMove(game, player, mode);
+      renderGame(game, mode, player);
     }
   });
   rail.appendChild(passBtn);
@@ -90,7 +203,8 @@ function renderGame(game: GameState, mode: GameMode): void {
   const board = renderBoard(game, {
     onPlace: (cell: Cell) => {
       game.place(cell);
-      renderGame(game, mode);
+      if (player) logLatestMove(game, player, mode);
+      renderGame(game, mode, player);
     },
   });
 
@@ -98,7 +212,7 @@ function renderGame(game: GameState, mode: GameMode): void {
   screen.appendChild(main);
   app.appendChild(screen);
 
-  if (game.isOver) showEndPanel(game, mode);
+  if (game.isOver) showEndPanel(game, mode, player);
 }
 
 /** Show an overlay panel; call `next()` on the first keypress or click. */
@@ -141,7 +255,7 @@ function bestHand(
 
 // Your own scorecard — the same HOLE/PAR/SCORE grid shown during play —
 // centered on screen, plus a best-hand callout.
-function showEndPanel(game: GameState, mode: GameMode): void {
+function showEndPanel(game: GameState, mode: GameMode, player?: Player): void {
   const score = scoreBoard(game.snapshot().board, mode);
   const best = bestHand(score, game.handCompletions, mode);
 
@@ -166,66 +280,74 @@ function showEndPanel(game: GameState, mode: GameMode): void {
     hint.className = "end-hint";
     hint.textContent = "Press any key to continue";
     panel.appendChild(hint);
-  }, () => void continueAfterRound(game, mode), true);
+  }, () => {
+    if (player) void reportTournamentRound(game, mode, player);
+    else showIntro(); // practice: nothing recorded, straight back to the menu
+  }, true);
 }
 
-// Persist the player's top-2-cards-per-hand history, submit their score to the
-// persistent leaderboard, then show the leaderboard and ask to play again.
-async function continueAfterRound(game: GameState, mode: GameMode): Promise<void> {
-  const humanScore = scoreBoard(game.snapshot().board, mode).round;
-  let highlight: Parameters<typeof renderLeaderboardScreen>[0]["highlight"];
-  let playerName = "You";
-  if (await leaderboard.wouldQualify(humanScore, mode)) {
-    const board = await leaderboard.top(mode);
-    const golf = mode === GameMode.GolfMode;
-    const projectedRank = board.filter((e) => (golf ? e.score < humanScore : e.score > humanScore)).length + 1;
-    const name = await promptForName(projectedRank);
-    if (name !== null) {
-      playerName = cleanName(name);
-      const entry = { name: playerName, score: humanScore, mode, date: todayISO() };
-      const result = await leaderboard.submit(entry);
-      if (result.qualified) highlight = entry;
-    }
-  }
+/**
+ * Tournament round is over: submit the score and show the field. Practice
+ * rounds never reach here — a practice score is not recorded anywhere.
+ */
+async function reportTournamentRound(game: GameState, mode: GameMode, player: Player): Promise<void> {
+  const board = game.snapshot().board;
+  const score = scoreBoard(board, mode);
+  const roundScore = score.round;
+  await flushMoves(); // ship the tail of the audit trail before the score lands
 
-  const date = todayISO();
-  const records: HandHistoryEntry[] = game.handCompletions.map((h) => ({
-    playerName,
+  // The round is finished, so report it to the AS400 datastream.
+  await reportRound({
+    tournament: AS400_TOURNAMENT,
+    charity: AS400_CHARITY,
+    playerId: player.playerCode,
+    score,
+    cards: boardCards(board),
+  });
+  const delivered = await tournament.submitRound({
+    tournamentId: player.tournamentId,
+    playerCode: player.playerCode,
+    playerName: player.playerName,
+    score: roundScore,
     mode,
-    date,
-    hole: h.hole,
-    topCards: h.topCards,
-  }));
-  void handHistory.appendMany(records);
-
-  showLeaderboardWith(mode, highlight);
-  if (await promptPlayAgain()) showIntro();
+    date: todayISO(),
+  });
+  const rows = await tournament.leaderboard(player.tournamentId, player.playerCode);
+  showRoundStandings(roundScore, delivered, rows);
 }
 
-function showLeaderboardWith(mode: GameMode, highlight: Parameters<typeof renderLeaderboardScreen>[0]["highlight"]): void {
+function ordinal(n: number): string {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] ?? s[v] ?? s[0]!);
+}
+
+/**
+ * End of a tournament round: the field on the signboard, with the player's
+ * placing and a warning if their score has not reached the server yet.
+ */
+function showRoundStandings(score: number, delivered: boolean, rows: LeaderboardRow[]): void {
+  const you = rows.find((r) => r.isYou);
   clear();
   document.body.dataset.bg = "intro";
-  app.appendChild(renderLeaderboardScreen({ leaderboard, mode, highlight, onBack: showIntro }));
+  app.appendChild(
+    renderTournamentBoard({
+      rows,
+      subtitle: you ? `You finished ${ordinal(you.rank)} of ${rows.length} with ${score}` : `Your round: ${score}`,
+      warning: delivered
+        ? undefined
+        : "Your score has not reached the scoring server yet. It is saved on this device and sends automatically — tell a tournament official.",
+      mock: tournament.isMock,
+      onBack: showIntro,
+    }),
+  );
 }
-
-// keyboard: P = pass
-document.addEventListener("keydown", (e) => {
-  if (e.key.toLowerCase() === "p") {
-    const btn = document.querySelector<HTMLButtonElement>(".pass-btn");
-    if (btn && !btn.disabled) btn.click();
-  }
-});
 
 function showIntro(): void {
   clear();
   document.body.dataset.bg = "intro";
-  app.appendChild(renderIntro(start, showLeaderboard));
+  app.appendChild(renderIntro(start, () => void startTournament()));
 }
 
-function showLeaderboard(mode: GameMode = GameMode.PokerStraightsMode): void {
-  clear();
-  document.body.dataset.bg = "intro";
-  app.appendChild(renderLeaderboardScreen({ leaderboard, mode, onBack: showIntro }));
-}
 
 showIntro();

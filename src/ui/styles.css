@@ -257,9 +257,6 @@ body[data-bg="golf"] .play-area { background: rgba(10, 28, 18, 0.42); box-shadow
   font-family: Georgia, serif; font-weight: 900; text-transform: uppercase;
   color: #2a3418;
 }
-.lb-toggle { display: flex; gap: 0.5rem; justify-content: center; margin-bottom: 0.9rem; }
-.lb-toggle button { flex: 1; max-width: 180px; padding: 0.5rem 0.8rem; border-radius: 8px; border: 2px solid #3f4d28; background: rgba(63,77,40,0.08); color: #2a3418; font-weight: 700; cursor: pointer; }
-.lb-toggle button.active { background: #3f4d28; color: #f4ecd8; }
 .lb-board { min-height: 120px; }
 .lb-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 .lb-table th { text-align: left; font-size: 0.66rem; letter-spacing: 0.08em; text-transform: uppercase; background: #3f4d28; color: #f4ecd8; padding: 4px 6px; }
@@ -269,6 +266,21 @@ body[data-bg="golf"] .play-area { background: rgba(10, 28, 18, 0.42); box-shadow
 .lb-score { color: #6b4f1d; font-weight: 800; text-align: right; font-variant-numeric: tabular-nums; }
 .lb-date { text-align: right; opacity: 0.75; font-size: 0.78rem; white-space: nowrap; color: #2a3418; }
 .lb-table tr.lb-hi td { background: rgba(63,77,40,0.18); }
+.lb-subtitle { text-align: center; margin: 0 0 0.5rem; font-weight: 700; color: #2a3418; }
+.lb-warning { text-align: center; margin: 0 0 0.6rem; font-size: 0.82rem; color: #7a2b1c; font-weight: 700; }
+.lb-mock { text-align: center; margin: 0 0 0.6rem; font-size: 0.7rem; font-style: italic; opacity: 0.75; color: #2a3418; }
+.lb-skin-wrap .lb-subtitle, .lb-skin-wrap .lb-warning, .lb-skin-wrap .lb-mock { color: var(--cream); }
+.lb-skin-wrap .lb-warning { color: #ffb4a2; }
+.lb-pager { display: flex; align-items: center; justify-content: center; gap: 1.2rem; margin: 0.7rem 0 0.2rem; }
+.lb-arrow {
+  width: 46px; height: 46px; border-radius: 50%; border: 2px solid var(--gold);
+  background: var(--navy); color: var(--gold); font-size: 1.8rem; line-height: 1;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.lb-arrow:disabled { opacity: 0.3; cursor: default; }
+.lb-arrow:not(:disabled):hover { background: var(--navy-deep); }
+.lb-page-label { font-size: 0.85rem; font-weight: 700; color: #2a3418; min-width: 10ch; text-align: center; }
+.lb-skin-wrap .lb-page-label { color: var(--cream); }
 .lb-empty { text-align: center; opacity: 0.8; padding: 1.4rem 0; font-style: italic; color: #2a3418; }
 .lb-back { margin: 1rem auto 0; display: block; min-width: 160px; }
 
@@ -276,6 +288,7 @@ body[data-bg="golf"] .play-area { background: rgba(10, 28, 18, 0.42); box-shadow
 .name-prompt .name-input { width: 100%; margin: 0.4rem 0 0.9rem; padding: 0.6rem 0.8rem; border-radius: 8px; border: 2px solid var(--gold); background: rgba(0,0,0,0.25); color: var(--cream); font-size: 1.1rem; text-align: center; letter-spacing: 0.05em; }
 .name-prompt .name-input:focus { outline: none; border-color: var(--cream); }
 .name-actions { display: flex; gap: 0.6rem; justify-content: center; }
+.code-count { font-size: 0.8rem; opacity: 0.6; margin: -0.5rem 0 0.7rem; font-variant-numeric: tabular-nums; }
 
 /* ---------- End overlay ---------- */
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 10; }

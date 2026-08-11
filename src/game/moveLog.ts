@@ -24,7 +24,7 @@ const FLUSH_AT = 10;
 
 export interface MoveEvent {
   tournamentId: string;
-  playerCode: string;
+  playerId: string;
   /** 0-based move number within the round. */
   seq: number;
   action: "place" | "pass" | "round-start";

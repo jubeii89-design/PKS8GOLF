@@ -1,75 +1,51 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GameMode } from "../src/engine/index.js";
-import {
-  flushPendingScores,
-  isValidPlayerCode,
-  pendingScoreCount,
-  reportScore,
-} from "../src/game/tournament.js";
+import { buildRecord, isValidPin, isValidPlayerId, rankChar, recordUrl, reportRound, pendingRecords, RECORD_LENGTH } from "../src/game/as400.js";
 import { MockTournamentService } from "../src/game/tournamentService.js";
 import { flushMoves, recordMove, pendingMoveCount, type MoveEvent } from "../src/game/moveLog.js";
 import { pageOfPlayer, TABLE_PAGE_SIZE } from "../src/ui/leaderboard.js";
-import { buildRecord, rankChar, recordUrl, RECORD_LENGTH } from "../src/game/as400.js";
 
-// Minimal in-memory stand-ins; the module reads these off globalThis.
+// Minimal in-memory stand-ins; the modules read these off globalThis.
 const store = new Map<string, string>();
 (globalThis as any).localStorage = {
   getItem: (k: string) => store.get(k) ?? null,
   setItem: (k: string, v: string) => void store.set(k, v),
 };
 
-const report = { playerCode: "123456789012345", score: 42, mode: GameMode.PokerStraightsMode, date: "2026-07-23" };
-
 beforeEach(() => store.clear());
 
-describe("player code", () => {
-  it("accepts exactly 15 digits", () => {
-    expect(isValidPlayerCode("123456789012345")).toBe(true);
-    expect(isValidPlayerCode("  123456789012345  ")).toBe(true);
+describe("player id / pin", () => {
+  it("accepts up to 15 alphanumeric chars for a player id", () => {
+    expect(isValidPlayerId("GORDONSTITT0001")).toBe(true);
+    expect(isValidPlayerId("  GORDONSTITT0001  ")).toBe(true);
+    expect(isValidPlayerId("abc123")).toBe(true);
   });
 
-  it("rejects wrong length or non-digits", () => {
-    for (const bad of ["", "12345678901234", "1234567890123456", "12345678901234x", "abcdefghijklmno"]) {
-      expect(isValidPlayerCode(bad)).toBe(false);
+  it("rejects an empty, too-long, or non-alphanumeric player id", () => {
+    for (const bad of ["", "X".repeat(16), "has space", "has-dash"]) {
+      expect(isValidPlayerId(bad)).toBe(false);
     }
   });
-});
 
-describe("score reporting", () => {
-  it("delivers on a 2xx and queues nothing", async () => {
-    (globalThis as any).fetch = vi.fn(async () => ({ ok: true }));
-    expect(await reportScore(report)).toBe(true);
-    expect(pendingScoreCount()).toBe(0);
+  it("accepts exactly 6 digits for a pin", () => {
+    expect(isValidPin("123456")).toBe(true);
+    expect(isValidPin("  123456  ")).toBe(true);
   });
 
-  // The score must survive a dead endpoint — this is the data-loss guard.
-  it("queues the score when the post fails, then flushes it later", async () => {
-    (globalThis as any).fetch = vi.fn(async () => {
-      throw new Error("offline");
-    });
-    expect(await reportScore(report)).toBe(false);
-    expect(pendingScoreCount()).toBe(1);
-
-    (globalThis as any).fetch = vi.fn(async () => ({ ok: true }));
-    await flushPendingScores();
-    expect(pendingScoreCount()).toBe(0);
-  });
-
-  it("keeps the score queued while the endpoint stays down", async () => {
-    (globalThis as any).fetch = vi.fn(async () => ({ ok: false }));
-    await reportScore(report);
-    await flushPendingScores();
-    expect(pendingScoreCount()).toBe(1);
+  it("rejects wrong-length or non-digit pins", () => {
+    for (const bad of ["", "12345", "1234567", "12345x"]) {
+      expect(isValidPin(bad)).toBe(false);
+    }
   });
 });
 
 describe("tee-off lockout", () => {
   const svc = new MockTournamentService();
 
-  // Mock rule: last digit < 2 means the tee time has already passed.
-  it("refuses a code whose tee-off has passed", async () => {
-    for (const code of ["123456789012340", "123456789012341"]) {
-      const join = await svc.join(code);
+  // Mock rule: last PIN digit < 2 means the tee time has already passed.
+  it("refuses a pin whose tee-off has passed", async () => {
+    for (const pin of ["100000", "100001"]) {
+      const join = await svc.join("GORDONSTITT0001", pin);
       expect(join.ok).toBe(false);
       if (!join.ok) {
         expect(join.reason).toBe("missed-tee-time");
@@ -78,45 +54,30 @@ describe("tee-off lockout", () => {
     }
   });
 
-  it("admits a code that has not teed off yet", async () => {
-    const join = await svc.join("123456789012345");
+  it("admits a pin that has not teed off yet", async () => {
+    const join = await svc.join("GORDONSTITT0001", "100005");
     expect(join.ok).toBe(true);
     if (join.ok) {
-      expect(join.playerCode).toBe("123456789012345");
+      expect(join.playerId).toBe("GORDONSTITT0001");
       expect(new Date(join.teeTime).getTime()).toBeGreaterThan(Date.now());
     }
   });
 });
 
 describe("round standings", () => {
-  beforeEach(() => {
-    store.clear();
-    (globalThis as any).fetch = vi.fn(async () => ({ ok: true }));
-  });
-
-  const submit = (svc: MockTournamentService, playerCode: string, score: number) =>
-    svc.submitRound({
-      tournamentId: "MOCK-TOURNAMENT",
-      playerCode,
-      playerName: "Tester",
-      score,
-      mode: GameMode.PokerStraightsMode,
-      date: "2026-07-23",
-    });
-
   it("places the player in a field sized to the tournament", async () => {
     const svc = new MockTournamentService(9);
-    await submit(svc, "123456789012345", 40);
-    const rows = await svc.leaderboard("MOCK-TOURNAMENT", "123456789012345");
+    svc.recordLocalScore("MOCK-TOURNAMENT", "P1", "Tester", 40);
+    const rows = await svc.leaderboard("MOCK-TOURNAMENT", "P1");
     expect(rows).toHaveLength(10); // 9 others + you
     expect(rows.filter((r) => r.isYou)).toHaveLength(1);
   });
 
   it("ranks the top score first (PokerStr8ts: more points is better)", async () => {
-    const svc = new MockTournamentService(0); // no field — just submitted rounds
-    await submit(svc, "111111111111111", 10);
-    await submit(svc, "222222222222222", 99);
-    const rows = await svc.leaderboard("MOCK-TOURNAMENT", "222222222222222");
+    const svc = new MockTournamentService(0); // no field — just recorded rounds
+    svc.recordLocalScore("MOCK-TOURNAMENT", "P1", "Tester", 10);
+    svc.recordLocalScore("MOCK-TOURNAMENT", "P2", "Tester", 99);
+    const rows = await svc.leaderboard("MOCK-TOURNAMENT", "P2");
     expect(rows[0]!.score).toBe(99);
     expect(rows[0]!.isYou).toBe(true);
     expect(rows[0]!.rank).toBe(1);
@@ -125,9 +86,9 @@ describe("round standings", () => {
 
   it("keeps only a player's latest round, not one row per attempt", async () => {
     const svc = new MockTournamentService(0);
-    await submit(svc, "123456789012345", 10);
-    await submit(svc, "123456789012345", 55);
-    const rows = await svc.leaderboard("MOCK-TOURNAMENT", "123456789012345");
+    svc.recordLocalScore("MOCK-TOURNAMENT", "P1", "Tester", 10);
+    svc.recordLocalScore("MOCK-TOURNAMENT", "P1", "Tester", 55);
+    const rows = await svc.leaderboard("MOCK-TOURNAMENT", "P1");
     expect(rows).toHaveLength(1);
     expect(rows[0]!.score).toBe(55);
   });
@@ -141,7 +102,7 @@ describe("move audit trail", () => {
 
   const move = (seq: number): MoveEvent => ({
     tournamentId: "T1",
-    playerCode: "123456789012345",
+    playerId: "GORDONSTITT0001",
     seq,
     action: "place",
     card: 101,
@@ -222,44 +183,44 @@ describe("AS400 record", () => {
   const hand = (handID: string, complete = true) => ({ handID, complete }) as any;
   const score = (round: number, ids: string[]) =>
     ({ round, frontNine: 0, backNine: 0, hands: ids.map((i) => hand(i)) }) as any;
-  const ids18 = ["3E","4G","4H","4H","3B","4G","5I","5I","4E","3C","4C","4C","4H","3B","4H","5G","5J","4G"];
+  const ids18 = ["3E", "4G", "4H", "4H", "3B", "4G", "5I", "5I", "4E", "3C", "4C", "4C", "4H", "3B", "4H", "5G", "5J", "4G"];
+  const completions = ids18.map((_, i) => ({ hole: i + 1, cards: [], topCards: [101, 111] })); // Ace, Jack
   const base = {
-    tournament: "33267",
-    charity: "CHARITYTEST",
-    playerId: "1111111111",
-    score: score(20978, ids18),
-    cards: Array.from({ length: 36 }, () => 101), // ace of a suit
+    playerId: "GORDONSTITT0001",
+    pin: "123456",
+    score: score(97, ids18),
+    handCompletions: completions,
   };
 
-  it("is always exactly 192 characters", () => {
+  it("is always exactly RECORD_LENGTH characters", () => {
     expect(buildRecord(base)).toHaveLength(RECORD_LENGTH);
     // Long inputs must truncate, not push later fields out of position.
-    expect(buildRecord({ ...base, charity: "X".repeat(80) })).toHaveLength(RECORD_LENGTH);
+    expect(buildRecord({ ...base, playerId: "X".repeat(40) })).toHaveLength(RECORD_LENGTH);
   });
 
-  it("lays out prefix, tournament, charity and player in order", () => {
-    const rec = buildRecord(base);
-    expect(rec.startsWith("TOURC33267CHARITYTEST1111111111")).toBe(true);
+  it("lays out prefix, day-of-year, quarter-hour, player id and pin in order", () => {
+    const rec = buildRecord(base, new Date(2026, 0, 1)); // day 1, so ddd = "001"
+    expect(rec.startsWith("TOURT001")).toBe(true);
+    expect(rec.slice(10, 25)).toBe("GORDONSTITT0001".padEnd(15, " "));
+    expect(rec.slice(25, 31)).toBe("123456");
   });
 
   it("writes all 18 hand IDs, two characters each", () => {
     const rec = buildRecord(base);
-    const block = rec.slice("TOURC33267CHARITYTEST1111111111".length, "TOURC33267CHARITYTEST1111111111".length + 36);
+    const block = rec.slice(31, 31 + 36);
     expect(block).toBe(ids18.join(""));
   });
 
   it("leaves a blank slot for a hand that never completed", () => {
-    const partial = score(10, ids18.map((i, n) => (n === 4 ? "" : i)));
+    const partial = score(10, ids18);
     partial.hands[4] = hand("", false);
     const rec = buildRecord({ ...base, score: partial });
     expect(rec.slice(31 + 8, 31 + 10)).toBe("  ");
   });
 
-  // A PokerStr8ts round can finish negative; the sign must survive.
-  it("keeps the sign and width of a negative score", () => {
-    const rec = buildRecord({ ...base, score: score(-42, ids18) });
-    expect(rec).toContain("-0042");
-    expect(buildRecord({ ...base, score: score(7, ids18) })).toContain("+0007");
+  it("writes an unsigned 3-digit score", () => {
+    expect(buildRecord({ ...base, score: score(42, ids18) })).toContain("042");
+    expect(buildRecord({ ...base, score: score(-42, ids18) })).toContain("042");
   });
 
   it("encodes each card as one rank character", () => {
@@ -268,8 +229,30 @@ describe("AS400 record", () => {
     expect(rankChar(113)).toBe("K"); // rank 13
   });
 
+  it("writes the 2 top-card ranks per hole", () => {
+    const rec = buildRecord(base);
+    const topBlock = rec.slice(31 + 36 + 3);
+    expect(topBlock.slice(0, 2)).toBe("AJ");
+  });
+
   it("sends to the supplied endpoint unmodified", () => {
     const url = recordUrl(buildRecord(base));
-    expect(url.startsWith("https://www.centriko.com/charity/datastream?TOURC33267CHARITYTEST")).toBe(true);
+    expect(url.startsWith("https://www.centriko.com/pgolfe/TNPKCGI1.pgm?HDATASTREAM=")).toBe(true);
+  });
+
+  it("keeps a local copy so a no-cors send is never the only record", async () => {
+    (globalThis as any).fetch = vi.fn(async () => undefined);
+    const { record, sent } = await reportRound(base);
+    expect(sent).toBe(true);
+    expect(pendingRecords()).toContain(record);
+  });
+
+  it("still keeps the local copy when the browser is offline", async () => {
+    (globalThis as any).fetch = vi.fn(async () => {
+      throw new Error("offline");
+    });
+    const { sent } = await reportRound(base);
+    expect(sent).toBe(false);
+    expect(pendingRecords()).toHaveLength(1);
   });
 });

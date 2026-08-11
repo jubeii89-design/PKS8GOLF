@@ -3,15 +3,14 @@
  * game screen from the player's GameState after each action.
  */
 
-import { type Cell, GameMode, allHands, cardAt, scoreBoard } from "./engine/index.js";
+import { type Cell, GameMode, scoreBoard } from "./engine/index.js";
 import { GameState } from "./game/gameState.js";
 import { renderIntro } from "./ui/intro.js";
 import { renderBoard } from "./ui/board.js";
 import { renderScorecard } from "./ui/scorecard.js";
-import { promptForPlayerCode, renderTournamentBoard } from "./ui/leaderboard.js";
-import { flushPendingScores, todayISO } from "./game/tournament.js";
+import { promptForPlayerCredentials, renderTournamentBoard, type PlayerCredentials } from "./ui/leaderboard.js";
 import { flushMoves, recordMove } from "./game/moveLog.js";
-import { reportRound } from "./game/as400.js";
+import { isValidPlayerId, isValidPin, reportRound } from "./game/as400.js";
 import { MockTournamentService, type JoinResult, type LeaderboardRow, type Player } from "./game/tournamentService.js";
 import { cardFace, cardLabel } from "./ui/cards.js";
 import { mountCourseBackground } from "./ui/courseBackground.js";
@@ -35,12 +34,7 @@ initDesignOverrides();
 // nothing below this line changes when you do.
 const tournament = new MockTournamentService();
 
-// Identify this event in the AS400 datastream record.
-const AS400_TOURNAMENT = import.meta.env.VITE_AS400_TOURNAMENT ?? "33267";
-const AS400_CHARITY = import.meta.env.VITE_AS400_CHARITY ?? "CHARITYTEST";
-
 // Retry anything stranded by an earlier connection drop or closed tab.
-void flushPendingScores();
 void flushMoves();
 
 // Last chance to ship buffered moves when the tab goes away mid-round — the
@@ -56,12 +50,27 @@ function start(mode: GameMode): void {
   renderGame(game, mode);
 }
 
-/** Tournament: 15-digit code → tee-off check → one scored, reported round. */
-async function startTournament(): Promise<void> {
-  const code = await promptForPlayerCode();
-  if (code === null) return;
+/**
+ * A QR code just encodes a URL with these params — the phone's camera app
+ * opens it like any link, and this reads them back out on load. Cleared from
+ * the address bar immediately so a refresh or share doesn't replay the join.
+ */
+function credentialsFromUrl(): PlayerCredentials | null {
+  const params = new URLSearchParams(window.location.search);
+  const playerId = params.get("player") ?? "";
+  const pin = params.get("pin") ?? "";
+  if (!params.has("player") && !params.has("pin")) return null;
+  window.history.replaceState(null, "", window.location.pathname);
+  if (!isValidPlayerId(playerId) || !isValidPin(pin)) return null;
+  return { playerId, pin };
+}
 
-  const join = await tournament.join(code);
+/** Tournament: player ID + PIN → tee-off check → one scored, reported round. */
+async function startTournament(prefilled?: PlayerCredentials | null): Promise<void> {
+  const creds = prefilled ?? (await promptForPlayerCredentials());
+  if (creds === null) return;
+
+  const join = await tournament.join(creds.playerId, creds.pin);
   if (!join.ok) {
     showJoinRejected(join);
     return;
@@ -81,7 +90,7 @@ function logRoundStart(game: GameState, player: Player, mode: GameMode): void {
   game.preplaced.forEach((p, i) => {
     recordMove({
       tournamentId: player.tournamentId,
-      playerCode: player.playerCode,
+      playerId: player.playerId,
       seq: i,
       action: "round-start",
       card: p.card,
@@ -98,7 +107,7 @@ function logLatestMove(game: GameState, player: Player, mode: GameMode): void {
   if (!last) return;
   recordMove({
     tournamentId: player.tournamentId,
-    playerCode: player.playerCode,
+    playerId: player.playerId,
     seq: game.preplaced.length + last.seq,
     action: last.action,
     card: last.card,
@@ -108,27 +117,12 @@ function logLatestMove(game: GameState, player: Player, mode: GameMode): void {
   });
 }
 
-/** Every card on the board, in hole order, for the AS400 record. */
-function boardCards(board: Parameters<typeof cardAt>[0]): number[] {
-  const seen = new Set<string>();
-  const cards: number[] = [];
-  for (const hand of allHands()) {
-    for (const cell of hand.cells) {
-      const key = `${cell.grid},${cell.col},${cell.row}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const id = cardAt(board, cell);
-      if (id !== null) cards.push(id);
-    }
-  }
-  return cards;
-}
-
-/** Code rejected at the door — wrong code, missed tee-off, or no server. */
+/** Rejected at the door — unknown player, wrong PIN, missed tee-off, or no server. */
 function showJoinRejected(join: Extract<JoinResult, { ok: false }>): void {
   const reasons = {
-    "missed-tee-time": "Your tee-off time has passed, so this code can no longer join. See a tournament official.",
-    "unknown-code": "That code was not recognised. Check the digits and try again.",
+    "missed-tee-time": "Your tee-off time has passed, so you can no longer join. See a tournament official.",
+    "unknown-player": "That player ID was not recognised. Check it and try again.",
+    "wrong-pin": "That PIN does not match the player ID. Check it and try again.",
     offline: "Could not reach the tournament server. Try again in a moment.",
   };
   showOverlay((panel) => {
@@ -287,33 +281,23 @@ function showEndPanel(game: GameState, mode: GameMode, player?: Player): void {
 }
 
 /**
- * Tournament round is over: submit the score and show the field. Practice
- * rounds never reach here — a practice score is not recorded anywhere.
+ * Tournament round is over: report the score to the AS400 datastream and
+ * show the field. Practice rounds never reach here — a practice score is not
+ * recorded anywhere.
  */
 async function reportTournamentRound(game: GameState, mode: GameMode, player: Player): Promise<void> {
-  const board = game.snapshot().board;
-  const score = scoreBoard(board, mode);
-  const roundScore = score.round;
+  const score = scoreBoard(game.snapshot().board, mode);
   await flushMoves(); // ship the tail of the audit trail before the score lands
 
-  // The round is finished, so report it to the AS400 datastream.
-  await reportRound({
-    tournament: AS400_TOURNAMENT,
-    charity: AS400_CHARITY,
-    playerId: player.playerCode,
+  const { sent } = await reportRound({
+    playerId: player.playerId,
+    pin: player.pin,
     score,
-    cards: boardCards(board),
+    handCompletions: game.handCompletions,
   });
-  const delivered = await tournament.submitRound({
-    tournamentId: player.tournamentId,
-    playerCode: player.playerCode,
-    playerName: player.playerName,
-    score: roundScore,
-    mode,
-    date: todayISO(),
-  });
-  const rows = await tournament.leaderboard(player.tournamentId, player.playerCode);
-  showRoundStandings(roundScore, delivered, rows);
+  tournament.recordLocalScore(player.tournamentId, player.playerId, player.playerName, score.round);
+  const rows = await tournament.leaderboard(player.tournamentId, player.playerId);
+  showRoundStandings(score.round, sent, rows);
 }
 
 function ordinal(n: number): string {
@@ -326,7 +310,7 @@ function ordinal(n: number): string {
  * End of a tournament round: the field on the signboard, with the player's
  * placing and a warning if their score has not reached the server yet.
  */
-function showRoundStandings(score: number, delivered: boolean, rows: LeaderboardRow[]): void {
+function showRoundStandings(score: number, sent: boolean, rows: LeaderboardRow[]): void {
   const you = rows.find((r) => r.isYou);
   clear();
   document.body.dataset.bg = "intro";
@@ -334,7 +318,7 @@ function showRoundStandings(score: number, delivered: boolean, rows: Leaderboard
     renderTournamentBoard({
       rows,
       subtitle: you ? `You finished ${ordinal(you.rank)} of ${rows.length} with ${score}` : `Your round: ${score}`,
-      warning: delivered
+      warning: sent
         ? undefined
         : "Your score has not reached the scoring server yet. It is saved on this device and sends automatically — tell a tournament official.",
       mock: tournament.isMock,
@@ -349,5 +333,6 @@ function showIntro(): void {
   app.appendChild(renderIntro(start, () => void startTournament()));
 }
 
-
-showIntro();
+const qrCreds = credentialsFromUrl();
+if (qrCreds) void startTournament(qrCreds);
+else showIntro();

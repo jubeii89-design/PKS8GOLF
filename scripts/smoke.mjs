@@ -121,18 +121,12 @@ const pokerBgGolf = Number(await page.locator("#bg-poker").evaluate((el) => getC
 assert(pokerBgGolf < 0.05, `poker table hidden in golf mode (opacity ${pokerBgGolf})`);
 await page.screenshot({ path: `${OUT}/bg-golf.png` });
 
-// --- Tournament: 15-digit code → scored round → score reported ---
-// Stub the scoring endpoint (stands in for the AS400 gateway).
-const posted = [];
-await page.route("**/api/score", async (route) => {
-  posted.push(JSON.parse(route.request().postData() || "{}"));
-  await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
-});
-// AS400 datastream. Intercepted so the test NEVER reaches the live charity
+// --- Tournament: player ID + PIN → scored round → AS400 datastream record ---
+// AS400 datastream. Intercepted so the test NEVER reaches the live mainframe
 // endpoint, while still proving the game fires a well-formed record.
 const as400 = [];
 await page.route("**centriko.com/**", async (route) => {
-  as400.push(new URL(route.request().url()).search.slice(1));
+  as400.push(new URL(route.request().url()).searchParams.get("HDATASTREAM") ?? "");
   await route.fulfill({ status: 200, contentType: "text/plain", body: "OK" });
 });
 // Per-move audit trail (stands in for the forensics store).
@@ -149,16 +143,17 @@ assert(
 );
 await page.locator(".mode-btn.primary").click();
 await page.waitForSelector(".code-prompt");
-const codeInput = page.locator(".code-prompt .name-input");
+const idInput = page.locator(".code-prompt .name-input").nth(0);
+const pinInput = page.locator(".code-prompt .name-input").nth(1);
 const codeStart = page.locator(".code-prompt .mode-btn.primary");
-assert(await codeStart.isDisabled(), "Start disabled before a code is entered");
-await codeInput.fill("12345");
-assert(await codeStart.isDisabled(), "Start still disabled on a short code");
-await codeInput.fill("12345678901234x");
-assert((await codeInput.inputValue()) === "12345678901234", "non-digits are stripped from the code");
-assert(await codeStart.isDisabled(), "Start disabled at 14 digits");
-await codeInput.fill("123456789012345");
-assert(!(await codeStart.isDisabled()), "Start enabled at exactly 15 digits");
+assert(await codeStart.isDisabled(), "Start disabled before id/pin are entered");
+await idInput.fill("GORDONSTITT0001");
+assert(await codeStart.isDisabled(), "Start still disabled with no PIN");
+await pinInput.fill("1234x");
+assert((await pinInput.inputValue()) === "1234", "non-digits are stripped from the PIN");
+assert(await codeStart.isDisabled(), "Start disabled at 4 PIN digits");
+await pinInput.fill("100005"); // last digit >= 2, mock rule: not yet teed off
+assert(!(await codeStart.isDisabled()), "Start enabled once id and 6-digit PIN are valid");
 await codeStart.click();
 await page.waitForSelector(".board");
 assert(await page.getAttribute("body", "data-bg") === "poker", "poker sets body[data-bg=poker]");
@@ -240,13 +235,13 @@ assert(await page.locator(".lb-warning").count() === 0, "no warning shown when t
 
 // --- AS400 datastream record fired on the finished round ---
 assert(as400.length === 1, `exactly one AS400 record sent (got ${as400.length})`);
-const rec = decodeURIComponent(as400[0]);
-assert(rec.startsWith("TOURC"), `record starts with the TOURC prefix: "${rec.slice(0, 24)}"`);
+const rec = as400[0];
+assert(rec.startsWith("TOURT"), `record starts with the TOURT prefix: "${rec.slice(0, 24)}"`);
 assert(
-  rec.startsWith("TOURC33267CHARITYTEST123456789012345"),
-  `record carries tournament, charity and player id: "${rec.slice(0, 40)}"`,
+  rec.slice(10, 25).startsWith("GORDONSTITT0001"),
+  `record carries the player id after the day/quarter-hour fields: "${rec.slice(0, 40)}"`,
 );
-assert(/[+-]\d{4}/.test(rec), `record carries a signed score: "${rec}"`);
+assert(rec.slice(25, 31) === "100005", `record carries the pin: "${rec.slice(25, 31)}"`);
 assert(rec.length >= 100, `record is a full fixed-width row (got ${rec.length})`);
 
 // --- Paging: a field bigger than one board page gets arrows ---
@@ -286,9 +281,6 @@ assert(
 );
 await page.screenshot({ path: `${OUT}/smoke-pager.png` });
 assert(await page.locator(".name-prompt").count() === 0, "tournament round never asks for a name");
-assert(posted.length === 1, `exactly one score POSTed (got ${posted.length})`);
-assert(posted[0].playerCode === "123456789012345", `POST carries the player code: ${posted[0].playerCode}`);
-assert(posted[0].score === Number(tourneyRound), `POSTed score matches the round (${posted[0].score} vs ${tourneyRound})`);
 
 // --- Audit trail: every card played is captured, in order, replayable ---
 // 36 cells - 6 auto-placed = 30 placements by the player, plus every pass.
@@ -305,8 +297,8 @@ assert(
   "passes are logged too, not just placements",
 );
 assert(
-  moved.every((m) => m.playerCode === "123456789012345" && m.tournamentId),
-  "every move carries the player code and tournament id",
+  moved.every((m) => m.playerId === "GORDONSTITT0001" && m.tournamentId),
+  "every move carries the player id and tournament id",
 );
 assert(
   moved.every((m, i) => m.seq === i),
@@ -330,7 +322,6 @@ assert(
   "Golf is presented as Practice alongside Tournament",
 );
 assert(await page.locator(".lb-link").count() === 0, "no leaderboard link — practice scores are not kept");
-const postsBeforePractice = posted.length;
 const movesBeforePractice = moved.length;
 
 await page.locator(".mode-btn:not(.primary)").click(); // Practice (Golf scoring)
@@ -343,7 +334,7 @@ await page.keyboard.press("Enter");
 await page.waitForSelector(".mode-select");
 assert(await page.locator(".name-prompt").count() === 0, "practice never asks for a name");
 assert(await page.locator(".standings").count() === 0, "practice never shows tournament standings");
-assert(posted.length === postsBeforePractice, "practice reports no score");
+assert(as400.length === 1, "practice reports no score to the AS400");
 assert(moved.length === movesBeforePractice, "practice logs no moves");
 const stored = await page.evaluate(() =>
   Object.keys(localStorage).filter((k) => k.includes("leaderboard") || k.includes("handHistory")),

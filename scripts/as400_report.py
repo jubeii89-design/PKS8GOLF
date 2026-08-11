@@ -7,12 +7,12 @@ status is visible, which makes this the reliable path.
 
 The endpoint is used exactly as supplied and is never rewritten:
 
-    https://www.centriko.com/charity/datastream?<RECORD>
+    https://www.centriko.com/pgolfe/TNPKCGI1.pgm?HDATASTREAM=<106-char record>
 
 Usage
 -----
     # one record on the command line
-    ./as400_report.py TOURC33267CHARITYTEST1111111111...
+    ./as400_report.py TOURT227312GORDONSTITT0001123456...
 
     # a file of records, one per line
     ./as400_report.py --file records.txt
@@ -39,16 +39,17 @@ import os
 
 # The live AS400 datastream. Override only for staging or a local test double;
 # production runs against this exact URL.
-ENDPOINT = os.environ.get("AS400_ENDPOINT", "https://www.centriko.com/charity/datastream")
-RECORD_LENGTH = 192
+ENDPOINT = os.environ.get("AS400_ENDPOINT", "https://www.centriko.com/pgolfe/TNPKCGI1.pgm")
+QUERY_PARAM = "HDATASTREAM"
+RECORD_LENGTH = 106
 RETRIES = 3
 BACKOFF_SECONDS = 2
 TIMEOUT_SECONDS = 30
 
 
 def record_url(record: str) -> str:
-    """The exact URL a record is sent to. The record is the query string."""
-    return f"{ENDPOINT}?{record.strip()}"
+    """The exact URL a record is sent to. The record is the query string value."""
+    return f"{ENDPOINT}?{QUERY_PARAM}={record.strip()}"
 
 
 def send(record: str, *, dry_run: bool = False) -> bool:

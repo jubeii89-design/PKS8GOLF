@@ -2,23 +2,25 @@
  * Tournament backend seam.
  *
  * A tournament needs shared state that a static site cannot provide: who holds
- * which code, when they tee off, and everyone's scores. This interface is that
- * boundary. `MockTournamentService` fakes it entirely in the browser so the
- * whole flow is playable today; a real implementation talks to the service in
- * front of the AS400 and nothing above this file changes.
+ * which player ID/PIN, when they tee off, and everyone's scores. This
+ * interface is that boundary. `MockTournamentService` fakes it entirely in
+ * the browser so the whole flow is playable today; a real implementation
+ * talks to the service in front of the AS400 and nothing above this file
+ * changes.
  *
  * Contract the real backend must satisfy:
- *   POST /join            { code }                  -> JoinResult
- *   POST /score           { tournamentId, code, … }  -> 2xx
- *   GET  /leaderboard/:id                            -> LeaderboardRow[]
+ *   POST /join            { playerId, pin }          -> JoinResult
+ *   GET  /leaderboard/:id                             -> LeaderboardRow[]
+ * Round scores do not go through this service — they are reported straight
+ * to the AS400 datastream (see as400.ts).
  */
 
 import { GameMode } from "../engine/index.js";
-import { reportScore } from "./tournament.js";
 
 export interface Player {
   tournamentId: string;
-  playerCode: string;
+  playerId: string;
+  pin: string;
   playerName: string;
   /** ISO timestamp the player must have joined by. */
   teeTime: string;
@@ -26,7 +28,7 @@ export interface Player {
 
 export type JoinResult =
   | ({ ok: true } & Player)
-  | { ok: false; reason: "unknown-code" | "missed-tee-time" | "offline"; teeTime?: string };
+  | { ok: false; reason: "unknown-player" | "wrong-pin" | "missed-tee-time" | "offline"; teeTime?: string };
 
 export interface LeaderboardRow {
   playerName: string;
@@ -35,22 +37,13 @@ export interface LeaderboardRow {
   isYou: boolean;
 }
 
-export interface RoundResult {
-  tournamentId: string;
-  playerCode: string;
-  playerName: string;
-  score: number;
-  mode: GameMode;
-  date: string;
-}
-
 export interface TournamentService {
-  /** Validate a code and claim a seat. Enforces the tee-off cutoff. */
-  join(code: string): Promise<JoinResult>;
-  /** Record a finished round. Returns false if it could not be delivered. */
-  submitRound(result: RoundResult): Promise<boolean>;
+  /** Validate a player ID + PIN and claim a seat. Enforces the tee-off cutoff. */
+  join(playerId: string, pin: string): Promise<JoinResult>;
+  /** Record a round score for the local standings display (session-only). */
+  recordLocalScore(tournamentId: string, playerId: string, playerName: string, score: number): void;
   /** Standings for the tournament, best first, with the caller flagged. */
-  leaderboard(tournamentId: string, playerCode: string): Promise<LeaderboardRow[]>;
+  leaderboard(tournamentId: string, playerId: string): Promise<LeaderboardRow[]>;
   /** True when this is fake data and must not be shown as authoritative. */
   readonly isMock: boolean;
 }
@@ -81,7 +74,7 @@ const FIELD_NAMES = [
 ];
 
 interface MockState {
-  results: { playerCode: string; playerName: string; score: number }[];
+  results: { playerId: string; playerName: string; score: number }[];
 }
 
 function readMock(): MockState {
@@ -114,11 +107,12 @@ function seeded(seed: string): () => number {
 }
 
 /**
- * In-browser fake. Accepts any 15-digit code and invents a plausible field so
- * the end-of-round leaderboard has something to show.
+ * In-browser fake. Accepts any player ID whose PIN's last digit determines
+ * tee-off, and invents a plausible field so the end-of-round leaderboard has
+ * something to show.
  *
- * Tee time is derived from the code's last digit so the lockout is testable:
- * codes ending in 0 or 1 have already missed their tee-off, everything else
+ * Tee time is derived from the PIN's last digit so the lockout is testable:
+ * PINs ending in 0 or 1 have already missed their tee-off, everything else
  * tees off shortly. `fieldSize` controls how many other players exist.
  */
 export class MockTournamentService implements TournamentService {
@@ -128,10 +122,10 @@ export class MockTournamentService implements TournamentService {
   // exercised in the demo the way a real tournament would exercise it.
   constructor(private readonly fieldSize = 23) {}
 
-  async join(code: string): Promise<JoinResult> {
-    const trimmed = code.trim();
-    const last = Number(trimmed.slice(-1));
-    // ponytail: last-digit rule stands in for a real schedule lookup.
+  async join(playerId: string, pin: string): Promise<JoinResult> {
+    const id = playerId.trim();
+    // ponytail: last-PIN-digit rule stands in for a real roster/schedule lookup.
+    const last = Number(pin.trim().slice(-1));
     const minutesFromNow = last - 2;
     const teeTime = new Date(Date.now() + minutesFromNow * 60_000).toISOString();
     if (minutesFromNow < 0) return { ok: false, reason: "missed-tee-time", teeTime };
@@ -139,33 +133,22 @@ export class MockTournamentService implements TournamentService {
     return {
       ok: true,
       tournamentId: "MOCK-TOURNAMENT",
-      playerCode: trimmed,
-      playerName: `Player ${trimmed.slice(-4)}`,
+      playerId: id,
+      pin: pin.trim(),
+      playerName: id,
       teeTime,
     };
   }
 
-  async submitRound(result: RoundResult): Promise<boolean> {
+  recordLocalScore(tournamentId: string, playerId: string, playerName: string, score: number): void {
+    void tournamentId; // single mock tournament; kept for interface parity with a real backend
     const state = readMock();
-    state.results = state.results.filter((r) => r.playerCode !== result.playerCode);
-    state.results.push({
-      playerCode: result.playerCode,
-      playerName: result.playerName,
-      score: result.score,
-    });
+    state.results = state.results.filter((r) => r.playerId !== playerId);
+    state.results.push({ playerId, playerName, score });
     writeMock(state);
-
-    // Still exercise the real AS400 post (and its retry queue) so that path
-    // is not dead code while the backend is mocked.
-    return reportScore({
-      playerCode: result.playerCode,
-      score: result.score,
-      mode: result.mode,
-      date: result.date,
-    });
   }
 
-  async leaderboard(tournamentId: string, playerCode: string): Promise<LeaderboardRow[]> {
+  async leaderboard(tournamentId: string, playerId: string): Promise<LeaderboardRow[]> {
     const state = readMock();
     const rand = seeded(tournamentId);
     const field = FIELD_NAMES.slice(0, Math.max(0, this.fieldSize)).map((playerName) => ({
@@ -174,9 +157,9 @@ export class MockTournamentService implements TournamentService {
       isYou: false,
     }));
     const mine = state.results.map((r) => ({
-      playerName: r.playerCode === playerCode ? "You" : r.playerName,
+      playerName: r.playerId === playerId ? "You" : r.playerName,
       score: r.score,
-      isYou: r.playerCode === playerCode,
+      isYou: r.playerId === playerId,
     }));
     return rankRows([...field, ...mine], GameMode.PokerStraightsMode);
   }

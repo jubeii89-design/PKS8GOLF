@@ -1,11 +1,11 @@
 /**
- * Tournament board UI: the full-screen standings signboard and the player-code
- * modal. Player names come from the backend and are rendered as textContent
- * (never innerHTML) since they are untrusted display text.
+ * Tournament board UI: the full-screen standings signboard and the player ID
+ * + PIN join modal. Player names come from the backend and are rendered as
+ * textContent (never innerHTML) since they are untrusted display text.
  */
 
 import type { LeaderboardRow } from "../game/tournamentService.js";
-import { isValidPlayerCode } from "../game/tournament.js";
+import { isValidPlayerId, isValidPin } from "../game/as400.js";
 import { leaderboardSignSVG } from "./leaderboardSign.js";
 import { designOverride } from "./designOverrides.js";
 
@@ -222,11 +222,16 @@ export function renderTournamentBoard(opts: TournamentBoardOpts): HTMLElement {
   return screen;
 }
 
+export interface PlayerCredentials {
+  playerId: string;
+  pin: string;
+}
+
 /**
- * Tournament entry: asks for the player's 15-digit code. Resolves with the
- * code, or null if they back out. Start stays disabled until 15 digits are in.
+ * Tournament entry: asks for the player's ID and PIN. Resolves with both, or
+ * null if they back out. Start stays disabled until both fields are valid.
  */
-export function promptForPlayerCode(): Promise<string | null> {
+export function promptForPlayerCredentials(): Promise<PlayerCredentials | null> {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "overlay";
@@ -237,17 +242,20 @@ export function promptForPlayerCode(): Promise<string | null> {
     const h = document.createElement("h2");
     h.textContent = "Tournament";
     const p = document.createElement("p");
-    p.textContent = "Enter your 15-digit player code:";
+    p.textContent = "Enter your player ID and PIN:";
 
-    const input = document.createElement("input");
-    input.className = "name-input";
-    input.inputMode = "numeric";
-    input.autocomplete = "off";
-    input.maxLength = 15;
-    input.placeholder = "···············";
+    const idInput = document.createElement("input");
+    idInput.className = "name-input";
+    idInput.autocomplete = "off";
+    idInput.maxLength = 15;
+    idInput.placeholder = "Player ID";
 
-    const count = document.createElement("div");
-    count.className = "code-count";
+    const pinInput = document.createElement("input");
+    pinInput.className = "name-input";
+    pinInput.inputMode = "numeric";
+    pinInput.autocomplete = "off";
+    pinInput.maxLength = 6;
+    pinInput.placeholder = "6-digit PIN";
 
     const row = document.createElement("div");
     row.className = "name-actions";
@@ -259,30 +267,33 @@ export function promptForPlayerCode(): Promise<string | null> {
     cancel.innerHTML = `<span class="mode-label">Cancel</span>`;
     row.append(start, cancel);
 
-    // Digits only; Start unlocks at exactly 15.
+    // PIN is digits only; Start unlocks once both fields validate.
     const sync = () => {
-      input.value = input.value.replace(/\D/g, "");
-      count.textContent = `${input.value.length} / 15`;
-      start.disabled = !isValidPlayerCode(input.value);
+      pinInput.value = pinInput.value.replace(/\D/g, "");
+      start.disabled = !isValidPlayerId(idInput.value) || !isValidPin(pinInput.value);
     };
-    input.addEventListener("input", sync);
+    idInput.addEventListener("input", sync);
+    pinInput.addEventListener("input", sync);
     sync();
 
-    const finish = (value: string | null) => {
+    const finish = (value: PlayerCredentials | null) => {
       overlay.remove();
       resolve(value);
     };
     start.addEventListener("click", () => {
-      if (!start.disabled) finish(input.value);
+      if (!start.disabled) finish({ playerId: idInput.value.trim(), pin: pinInput.value.trim() });
     });
     cancel.addEventListener("click", () => finish(null));
-    input.addEventListener("keydown", (e) => {
+    idInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") start.click();
+    });
+    pinInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") start.click();
     });
 
-    panel.append(h, p, input, count, row);
+    panel.append(h, p, idInput, pinInput, row);
     overlay.appendChild(panel);
     document.getElementById("app")!.appendChild(overlay);
-    input.focus();
+    idInput.focus();
   });
 }

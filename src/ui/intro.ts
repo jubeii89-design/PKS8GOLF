@@ -47,7 +47,7 @@ export function renderIntro(
   if (onTournament) {
     const t = document.createElement("button");
     t.className = "mode-btn primary";
-    t.innerHTML = `<span class="mode-label">Tournament</span><span class="mode-sub">Enter your player code — score is reported.</span>`;
+    t.innerHTML = `<span class="mode-label">Tournament</span><span class="mode-sub">Enter your player ID and PIN — score is reported.</span>`;
     t.addEventListener("click", () => onTournament());
     modes.appendChild(t);
   }

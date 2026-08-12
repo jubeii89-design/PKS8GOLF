@@ -11,7 +11,9 @@
     "package": "vite build && rm -f pokerst8ts-v1.0.0.zip && cd dist && zip -r ../pokerst8ts-v1.0.0.zip . && cd .. && echo 'Packaged: pokerst8ts-v1.0.0.zip'",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "relay": "node server/relay.mjs",
+    "relay:check": "node scripts/relay-check.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.61.1",

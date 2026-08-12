@@ -11,7 +11,7 @@ import { renderScorecard } from "./ui/scorecard.js";
 import { promptForPlayerCredentials, renderTournamentBoard, type PlayerCredentials } from "./ui/leaderboard.js";
 import { flushMoves, recordMove } from "./game/moveLog.js";
 import { isValidPlayerId, isValidPin, reportRound } from "./game/as400.js";
-import { MockTournamentService, type JoinResult, type LeaderboardRow, type Player } from "./game/tournamentService.js";
+import { createTournamentService, type JoinResult, type LeaderboardRow, type Player } from "./game/tournamentService.js";
 import { cardFace, cardLabel } from "./ui/cards.js";
 import { mountCourseBackground } from "./ui/courseBackground.js";
 import { mountPokerTableBackground } from "./ui/pokerTableBackground.js";
@@ -30,9 +30,9 @@ if (bgPoker) mountPokerTableBackground(bgPoker);
 mountBackgroundMusic(document.body);
 initDesignOverrides();
 
-// Swap for a real HTTP-backed TournamentService once the backend exists —
-// nothing below this line changes when you do.
-const tournament = new MockTournamentService();
+// Real standings when VITE_RELAY_URL points at server/relay.mjs; an invented
+// field (clearly labelled as such) when it does not.
+const tournament = createTournamentService();
 
 // Retry anything stranded by an earlier connection drop or closed tab.
 void flushMoves();
@@ -289,12 +289,15 @@ async function reportTournamentRound(game: GameState, mode: GameMode, player: Pl
   const score = scoreBoard(game.snapshot().board, mode);
   await flushMoves(); // ship the tail of the audit trail before the score lands
 
-  const { sent } = await reportRound({
-    playerId: player.playerId,
-    pin: player.pin,
-    score,
-    handCompletions: game.handCompletions,
-  });
+  const { sent } = await reportRound(
+    {
+      playerId: player.playerId,
+      pin: player.pin,
+      score,
+      handCompletions: game.handCompletions,
+    },
+    player.playerName,
+  );
   tournament.recordLocalScore(player.tournamentId, player.playerId, player.playerName, score.round);
   const rows = await tournament.leaderboard(player.tournamentId, player.playerId);
   showRoundStandings(score.round, sent, rows);

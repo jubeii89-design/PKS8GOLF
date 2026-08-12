@@ -3,19 +3,20 @@
  *
  * A tournament needs shared state that a static site cannot provide: who holds
  * which player ID/PIN, when they tee off, and everyone's scores. This
- * interface is that boundary. `MockTournamentService` fakes it entirely in
- * the browser so the whole flow is playable today; a real implementation
- * talks to the service in front of the AS400 and nothing above this file
- * changes.
+ * interface is that boundary.
  *
- * Contract the real backend must satisfy:
- *   POST /join            { playerId, pin }          -> JoinResult
- *   GET  /leaderboard/:id                             -> LeaderboardRow[]
- * Round scores do not go through this service — they are reported straight
- * to the AS400 datastream (see as400.ts).
+ * Two implementations:
+ *   - `RelayTournamentService` — real standings from server/relay.mjs, which
+ *     sees every round on its way to the AS400.
+ *   - `MockTournamentService` — invents a field so the flow is playable with
+ *     no server at all. Flagged `isMock` so the UI can say so.
+ *
+ * Round scores do not go through this service; they are reported via
+ * as400.ts, which routes through the relay when one is configured.
  */
 
 import { GameMode } from "../engine/index.js";
+import { hasRelay, relayEndpoint } from "./relay.js";
 
 export interface Player {
   tournamentId: string;
@@ -46,6 +47,46 @@ export interface TournamentService {
   leaderboard(tournamentId: string, playerId: string): Promise<LeaderboardRow[]>;
   /** True when this is fake data and must not be shown as authoritative. */
   readonly isMock: boolean;
+}
+
+/**
+ * Real standings, served by the relay. Every finished round passes through it
+ * on the way to the AS400, so it can answer what the AS400 cannot: how the
+ * rest of the field is doing.
+ *
+ * Joining is still decided locally — the relay holds no roster, so any valid
+ * ID/PIN is admitted under the same tee-off rule the mock uses. Replace `join`
+ * once there is a real roster to check against.
+ */
+export class RelayTournamentService implements TournamentService {
+  readonly isMock = false;
+
+  private readonly fallbackJoin = new MockTournamentService(0);
+
+  async join(playerId: string, pin: string): Promise<JoinResult> {
+    return this.fallbackJoin.join(playerId, pin);
+  }
+
+  recordLocalScore(): void {
+    // The relay recorded the round when the score was reported; nothing to do.
+  }
+
+  async leaderboard(tournamentId: string, playerId: string): Promise<LeaderboardRow[]> {
+    void tournamentId; // one tournament per relay instance
+    try {
+      const res = await fetch(`${relayEndpoint("/leaderboard")}?playerId=${encodeURIComponent(playerId)}`);
+      if (!res.ok) return [];
+      const body = (await res.json()) as { rows?: LeaderboardRow[] };
+      return Array.isArray(body.rows) ? body.rows : [];
+    } catch {
+      return []; // relay unreachable — an empty board is honest, invented rows are not
+    }
+  }
+}
+
+/** Real standings when a relay is configured, an invented field otherwise. */
+export function createTournamentService(): TournamentService {
+  return hasRelay() ? new RelayTournamentService() : new MockTournamentService();
 }
 
 /** Golf: fewest strokes wins. PokerStr8ts: most points wins. */

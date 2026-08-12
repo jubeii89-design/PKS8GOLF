@@ -11,12 +11,16 @@
  * dies mid-round is exactly the case the audit trail exists for, so the buffer
  * is mirrored to localStorage and flushed again on next load.
  *
- * Endpoint: VITE_MOVES_ENDPOINT (defaults to /api/moves).
+ * Endpoint: the relay's /moves when VITE_RELAY_URL is set, otherwise
+ * VITE_MOVES_ENDPOINT (defaults to /api/moves). Without either, there is
+ * nowhere for the trail to land — moves stay buffered on the device rather
+ * than being discarded, but they will not reach anyone who can review them.
  */
 
 import type { Cell } from "../engine/index.js";
+import { hasRelay, relayEndpoint } from "./relay.js";
 
-const ENDPOINT = import.meta.env.VITE_MOVES_ENDPOINT ?? "/api/moves";
+const ENDPOINT = hasRelay() ? relayEndpoint("/moves") : (import.meta.env.VITE_MOVES_ENDPOINT ?? "/api/moves");
 const BUFFER_KEY = "pokerst8ts.moveBuffer.v1";
 const FLUSH_MS = 10_000;
 /** Flush early once this many moves are waiting, so bursts do not sit around. */

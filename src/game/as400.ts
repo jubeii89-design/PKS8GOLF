@@ -34,6 +34,7 @@
 
 import { type BoardScore, rankOf } from "../engine/index.js";
 import type { HandCompletion } from "./gameState.js";
+import { hasRelay, relayEndpoint } from "./relay.js";
 
 /** Supplied verbatim — not parsed, not rebuilt. */
 export const AS400_URL = "https://www.centriko.com/pgolfe/TNPKCGI1.pgm";
@@ -146,20 +147,63 @@ export function pendingRecords(): string[] {
   return readPending();
 }
 
+/** Drop one record once something durable has taken responsibility for it. */
+function clearPending(record: string): void {
+  writePending(readPending().filter((r) => r !== record));
+}
+
 /**
- * Send one finished round to the AS400. Always keeps a local copy: the browser
- * cannot confirm a no-cors delivery, so the copy is the only proof the round
- * was recorded at all. `sent` only means the request left the browser without
- * throwing (e.g. not offline) — it is not proof the AS400 accepted it.
+ * Send one finished round.
+ *
+ * Two paths, never both, so a record can never be delivered twice:
+ *
+ * - With a relay configured, the record goes to the relay, which forwards it
+ *   to the AS400 server-side. That path can read the response, so `confirmed`
+ *   means the AS400 actually accepted the record — not merely that a request
+ *   was fired.
+ * - Standalone, the browser sends it directly. Cross-origin rules hide the
+ *   response, so the best that can be said is that the request did not throw.
+ *   `confirmed` is false in this case even on success, because nothing was
+ *   confirmed.
+ *
+ * Either way a local copy is kept first, so a failure anywhere downstream
+ * leaves the round recoverable via scripts/as400_report.py.
  */
-export async function reportRound(r: RoundRecord): Promise<{ record: string; sent: boolean }> {
+export async function reportRound(
+  r: RoundRecord,
+  playerName?: string,
+): Promise<{ record: string; sent: boolean; confirmed: boolean }> {
   const record = buildRecord(r);
   writePending([...readPending(), record]);
+
+  if (hasRelay()) {
+    try {
+      const res = await fetch(relayEndpoint("/round"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          playerId: r.playerId.trim(),
+          playerName: playerName ?? r.playerId.trim(),
+          score: r.score.round,
+          record,
+        }),
+        keepalive: true,
+      });
+      if (!res.ok) return { record, sent: false, confirmed: false };
+      const body = (await res.json()) as { as400Delivered?: boolean };
+      // The relay holds the record now, so drop our copy of it.
+      clearPending(record);
+      return { record, sent: true, confirmed: body.as400Delivered === true };
+    } catch {
+      return { record, sent: false, confirmed: false }; // offline; local copy stands
+    }
+  }
+
   let sent = true;
   try {
     await fetch(recordUrl(record), { method: "GET", mode: "no-cors", keepalive: true });
   } catch {
     sent = false; // offline — the local copy is what scripts/as400_report.py will send
   }
-  return { record, sent };
+  return { record, sent, confirmed: false };
 }

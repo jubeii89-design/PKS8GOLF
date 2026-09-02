@@ -349,6 +349,28 @@ function showIntro(): void {
   app.appendChild(renderIntro(start, () => void startTournament()));
 }
 
+/**
+ * Square returns the player here after checkout. Without this they land on the
+ * menu with no sign anything happened, wondering whether they just paid.
+ */
+function showPaymentComplete(): void {
+  window.history.replaceState(null, "", window.location.pathname);
+  showIntro();
+  showOverlay((panel) => {
+    const h2 = document.createElement("h2");
+    h2.textContent = "You're entered";
+    const p = document.createElement("p");
+    p.textContent =
+      "Thank you — your entry is confirmed. We've emailed your Player ID and PIN; " +
+      "you'll need both to join. Check your inbox, and your spam folder if it isn't there.";
+    const hint = document.createElement("p");
+    hint.className = "end-hint";
+    hint.textContent = "Press any key to continue";
+    panel.append(h2, p, hint);
+  }, showIntro);
+}
+
 const qrCreds = credentialsFromUrl();
-if (qrCreds) void startTournament(qrCreds);
+if (new URLSearchParams(window.location.search).get("signup") === "complete") showPaymentComplete();
+else if (qrCreds) void startTournament(qrCreds);
 else showIntro();

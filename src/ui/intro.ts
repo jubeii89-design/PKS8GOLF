@@ -54,5 +54,15 @@ export function renderIntro(
   modes.appendChild(makeBtn("Practice", "Golf scoring — warm up before you tee off.", GameMode.GolfMode));
 
   screen.append(home, presents, crest(), wordmark, tagline, modes);
+
+  // Someone arriving without credentials had no route to get any: the signup
+  // page existed but nothing pointed at it.
+  if (onTournament) {
+    const signup = document.createElement("a");
+    signup.className = "signup-link";
+    signup.href = "../signup/";
+    signup.textContent = "Not entered yet? Sign up for the tournament";
+    screen.appendChild(signup);
+  }
   return screen;
 }

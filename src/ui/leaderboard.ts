@@ -341,7 +341,13 @@ export function promptForPlayerCredentials(): Promise<PlayerCredentials | null> 
       if (e.key === "Enter") start.click();
     });
 
-    panel.append(h, p, idInput, pinInput, row);
+    // The player who has not signed up yet ends up here; give them the way out.
+    const help = document.createElement("a");
+    help.className = "signup-link";
+    help.href = "../signup/";
+    help.textContent = "Don't have a Player ID? Sign up";
+
+    panel.append(h, p, idInput, pinInput, row, help);
     overlay.appendChild(panel);
     document.getElementById("app")!.appendChild(overlay);
     idInput.focus();

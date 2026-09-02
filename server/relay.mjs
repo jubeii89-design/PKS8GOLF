@@ -57,6 +57,19 @@ const TOURNAMENT_MODE = 0;
 const ENTRY_FEE_CENTS = Number(process.env.ENTRY_FEE_CENTS ?? 2500);
 const CURRENCY = process.env.CURRENCY ?? "CAD";
 const PLAY_URL = process.env.PLAY_URL ?? "https://www.strategictitans.ca/play/";
+/**
+ * The moment after which nobody new may start. One deadline for the whole
+ * field, which is what a shotgun-start charity event actually runs on. Unset
+ * means no cutoff at all — playable any time, which is the safe default for a
+ * date that has not been fixed yet.
+ */
+const TEE_OFF_AT = process.env.TEE_OFF_AT ?? "";
+/** Guards the credential re-issue endpoint. Unset leaves it closed. */
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN ?? "";
+/** Each signup creates a real Square order, so the endpoint is worth limiting. */
+const SIGNUP_LIMIT = Number(process.env.SIGNUP_LIMIT ?? 5);
+const SIGNUP_WINDOW_MS = 10 * 60 * 1000;
+
 const TOURNAMENT = {
   name: process.env.TOURNAMENT_NAME ?? "Strategic Titans Charity Tournament",
   charity: process.env.TOURNAMENT_CHARITY ?? "our charity partner",
@@ -239,6 +252,35 @@ async function readBody(req) {
   }
 }
 
+/**
+ * A crude per-address limit on signups.
+ *
+ * In memory rather than in the database because it is a courtesy, not a
+ * security boundary — anyone determined has more addresses. It exists so a
+ * stuck retry loop or a bored visitor cannot fill your Square dashboard with
+ * abandoned orders.
+ */
+const signupAttempts = new Map();
+
+function signupAllowed(ip) {
+  const now = Date.now();
+  const recent = (signupAttempts.get(ip) ?? []).filter((t) => now - t < SIGNUP_WINDOW_MS);
+  if (recent.length >= SIGNUP_LIMIT) {
+    signupAttempts.set(ip, recent);
+    return false;
+  }
+  recent.push(now);
+  signupAttempts.set(ip, recent);
+  return true;
+}
+
+/** Behind a reverse proxy the real address is in the forwarded header. */
+function clientIp(req) {
+  const fwd = req.headers["x-forwarded-for"];
+  if (typeof fwd === "string" && fwd.length > 0) return fwd.split(",")[0].trim();
+  return req.socket.remoteAddress ?? "unknown";
+}
+
 /** Enough of an address to be plausible; Square will reject a truly bad one. */
 function looksLikeEmail(value) {
   return typeof value === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim()) && value.length <= 254;
@@ -293,13 +335,16 @@ const server = createServer(async (req, res) => {
       const name = typeof body.name === "string" ? body.name.trim() : "";
       const playerEmail = typeof body.email === "string" ? body.email.trim() : "";
 
+      if (!signupAllowed(clientIp(req))) {
+        return json(res, 429, { error: "Too many attempts. Please wait a few minutes and try again." });
+      }
       if (name.length < 2 || name.length > 60) return json(res, 400, { error: "Please give your full name." });
       if (!looksLikeEmail(playerEmail)) return json(res, 400, { error: "Please give a valid email address." });
       if (!square.isConfigured()) {
         return json(res, 503, { error: "Signups are not open yet — payment is not configured." });
       }
 
-      const created = roster.signup({ name, email: playerEmail });
+      const created = roster.signup({ name, email: playerEmail, teeTime: TEE_OFF_AT || null });
       if (!created.ok) {
         return json(res, 409, {
           error: "That email is already registered. Check your inbox for your Player ID and PIN.",
@@ -516,6 +561,39 @@ const server = createServer(async (req, res) => {
       });
     }
 
+    // Re-send a paid player's credentials.
+    //
+    // The counterpart to the PAID BUT NOT EMAILED log line: without this, a
+    // player whose email failed has been charged and cannot play, and the only
+    // remedy would be editing the database by hand during the event.
+    if (req.method === "POST" && url.pathname === "/admin/reissue") {
+      if (ADMIN_TOKEN === "" || bearerFrom(req) !== ADMIN_TOKEN) {
+        return json(res, 403, { error: "forbidden" });
+      }
+      const body = await readBody(req);
+      const player = roster.get(String(body.playerId ?? "").trim());
+      if (!player) return json(res, 404, { error: "unknown player" });
+      if (player.status !== "paid") return json(res, 409, { error: "player has not paid" });
+
+      // Issues a fresh PIN and invalidates the old one, which is what you want:
+      // if the first email went astray, it should stop working.
+      const issued = await issueCredentials(player);
+      log(`admin re-issued credentials for ${player.playerId} (emailed=${issued.sent})`);
+      return json(res, 200, { ok: true, emailed: issued.sent, reason: issued.reason });
+    }
+
+    // Who needs attention: paid but never got a PIN, or paid but never played.
+    if (req.method === "GET" && url.pathname === "/admin/attention") {
+      if (ADMIN_TOKEN === "" || bearerFrom(req) !== ADMIN_TOKEN) {
+        return json(res, 403, { error: "forbidden" });
+      }
+      return json(res, 200, {
+        paidButNoPin: db.paidButNoPin(),
+        paidButNeverPlayed: db.paidButNeverPlayed(),
+        as400Pending: db.pendingCount(),
+      });
+    }
+
     // Standings. This is the read path the AS400 cannot provide.
     if (req.method === "GET" && url.pathname === "/leaderboard") {
       return json(res, 200, { rows: leaderboard(url.searchParams.get("playerId") ?? "") });
@@ -551,6 +629,8 @@ server.listen(PORT, () => {
   log(`  roster   ${counts.total} registered, ${counts.paid} paid`);
   log(`  square   ${square.isConfigured() ? square.environment() : "NOT CONFIGURED — signups closed"}`);
   log(`  email    ${email.isConfigured() ? "smtp" : "NOT CONFIGURED — credentials will not be sent"}`);
+  log(`  tee-off  ${TEE_OFF_AT || "no cutoff — players may start any time"}`);
+  log(`  admin    ${ADMIN_TOKEN ? "enabled" : "disabled — set ADMIN_TOKEN to re-issue credentials"}`);
   if (square.isConfigured() && !square.canVerifyWebhooks()) {
     log(`  WARNING  no webhook key/url set — payment confirmations cannot be trusted and will be refused`);
   }

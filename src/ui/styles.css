@@ -321,3 +321,14 @@ body[data-bg="golf"] .play-area { background: rgba(10, 28, 18, 0.42); box-shadow
   .grid { --cell: 46px; }
   .play-area { flex-direction: column; align-items: center; }
 }
+
+/* Route to the signup page for anyone without credentials. */
+.signup-link {
+  display: block;
+  margin-top: 18px;
+  text-align: center;
+  font-size: 14px;
+  color: #e8c766;
+  text-decoration: underline;
+}
+.signup-link:hover { color: #f2d67e; }

@@ -18,7 +18,8 @@
     "auth:check": "npm run build:server && node scripts/auth-check.mjs",
     "build:server": "tsc -p tsconfig.server.json",
     "verify:check": "npm run build:server && node scripts/verify-check.mjs",
-    "checks": "npm run auth:check && npm run relay:check && npm run signup:check && npm run verify:check"
+    "checks": "npm run auth:check && npm run relay:check && npm run signup:check && npm run verify:check && npm run ops:check",
+    "ops:check": "npm run build:server && node scripts/ops-check.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.61.1",

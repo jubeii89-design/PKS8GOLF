@@ -96,8 +96,19 @@ export interface TournamentBoardOpts {
   warning?: string;
   /** True when the rows are mock data and must not be read as authoritative. */
   mock?: boolean;
+  /**
+   * Fetches the current standings. When given, the board re-reads them on a
+   * timer so a player watching it sees the field fill in behind them rather
+   * than a snapshot frozen at the moment they finished.
+   */
+  refresh?: () => Promise<LeaderboardRow[]>;
+  /** How often to re-read. Long enough to be cheap, short enough to feel live. */
+  refreshMs?: number;
   onBack: () => void;
 }
+
+/** Default poll interval: a hundred players finishing over an hour is slow news. */
+export const BOARD_REFRESH_MS = 10_000;
 
 /** Full-screen tournament standings, shown as the wooden signpost. */
 export function renderTournamentBoard(opts: TournamentBoardOpts): HTMLElement {
@@ -105,11 +116,15 @@ export function renderTournamentBoard(opts: TournamentBoardOpts): HTMLElement {
   screen.className = "screen leaderboard-screen";
   const bg = designOverride("leaderboard");
 
+  // Rows are replaced in place by the refresh below, so everything downstream
+  // reads through this rather than closing over the initial array.
+  let rows = opts.rows;
+
   // The board shows as many rows as it has slots: the skin image has a fixed
   // number of printed rows, the drawn signboard is free to show more.
   const pageSize = bg ? LB_SKIN_ROWS_PCT.length : TABLE_PAGE_SIZE;
-  const pageCount = Math.max(1, Math.ceil(opts.rows.length / pageSize));
-  let page = pageOfPlayer(opts.rows, pageSize);
+  let pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+  let page = pageOfPlayer(rows, pageSize);
 
   const back = document.createElement("button");
   back.className = "mode-btn primary lb-back";
@@ -155,13 +170,18 @@ export function renderTournamentBoard(opts: TournamentBoardOpts): HTMLElement {
   pager.append(prev, pageLabel, next);
 
   const draw = (into: HTMLElement, render: (el: HTMLElement, rows: LeaderboardRow[]) => void) => {
-    render(into, opts.rows.slice(page * pageSize, (page + 1) * pageSize));
+    render(into, rows.slice(page * pageSize, (page + 1) * pageSize));
     pageLabel.textContent = `Page ${page + 1} of ${pageCount}`;
     prev.disabled = page === 0;
     next.disabled = page >= pageCount - 1;
   };
 
+  // Set by mountPager so the refresh below can redraw whichever board (skinned
+  // or drawn) actually got mounted.
+  let redraw: () => void = () => {};
+
   const mountPager = (parent: HTMLElement, into: HTMLElement, render: (el: HTMLElement, rows: LeaderboardRow[]) => void) => {
+    redraw = () => draw(into, render);
     draw(into, render);
     if (pageCount > 1) {
       prev.addEventListener("click", () => {
@@ -173,6 +193,34 @@ export function renderTournamentBoard(opts: TournamentBoardOpts): HTMLElement {
       parent.appendChild(pager);
     }
   };
+
+  /**
+   * Re-read the standings while the board is on screen.
+   *
+   * The player's own page is held rather than recomputed, so the board does not
+   * jump under them as other people finish. Polling stops when the board is
+   * removed, so leaving the screen ends it.
+   */
+  function startRefreshing(): void {
+    if (!opts.refresh) return;
+    const every = opts.refreshMs ?? BOARD_REFRESH_MS;
+    const timer = setInterval(async () => {
+      if (!screen.isConnected) {
+        clearInterval(timer);
+        return;
+      }
+      try {
+        const next = await opts.refresh!();
+        if (next.length === 0) return; // a blip is not news; keep what we have
+        rows = next;
+        pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+        page = Math.min(page, pageCount - 1);
+        redraw();
+      } catch {
+        /* the next tick can try again */
+      }
+    }, every);
+  }
 
   if (bg) {
     // Custom overlay: real name/score data positioned onto the uploaded
@@ -191,6 +239,7 @@ export function renderTournamentBoard(opts: TournamentBoardOpts): HTMLElement {
     back.classList.add("lb-skin-back");
     wrap.appendChild(back);
     screen.appendChild(wrap);
+    startRefreshing();
     return screen;
   }
 
@@ -219,6 +268,7 @@ export function renderTournamentBoard(opts: TournamentBoardOpts): HTMLElement {
   panel.appendChild(back);
   signboard.appendChild(panel);
   screen.appendChild(signboard);
+  startRefreshing();
   return screen;
 }
 

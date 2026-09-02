@@ -303,7 +303,7 @@ async function reportTournamentRound(game: GameState, mode: GameMode, player: Pl
   const finalScore = reported.score ?? score.round;
   tournament.recordLocalScore(player.tournamentId, player.playerId, player.playerName, finalScore);
   const rows = await tournament.leaderboard(player.tournamentId, player.playerId);
-  showRoundStandings(finalScore, reported.sent, rows);
+  showRoundStandings(finalScore, reported.sent, rows, player);
 }
 
 function ordinal(n: number): string {
@@ -316,7 +316,12 @@ function ordinal(n: number): string {
  * End of a tournament round: the field on the signboard, with the player's
  * placing and a warning if their score has not reached the server yet.
  */
-function showRoundStandings(score: number, sent: boolean, rows: LeaderboardRow[]): void {
+function showRoundStandings(
+  score: number,
+  sent: boolean,
+  rows: LeaderboardRow[],
+  player?: Player,
+): void {
   const you = rows.find((r) => r.isYou);
   clear();
   document.body.dataset.bg = "intro";
@@ -328,6 +333,11 @@ function showRoundStandings(score: number, sent: boolean, rows: LeaderboardRow[]
         ? undefined
         : "Your score has not reached the scoring server yet. It is saved on this device and sends automatically — tell a tournament official.",
       mock: tournament.isMock,
+      // Players finish at different times, so the board keeps re-reading while
+      // it is open rather than freezing at the moment this player finished.
+      refresh: player
+        ? () => tournament.leaderboard(player.tournamentId, player.playerId)
+        : undefined,
       onBack: showIntro,
     }),
   );

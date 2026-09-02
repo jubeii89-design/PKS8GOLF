@@ -16,7 +16,7 @@
  */
 
 import { GameMode } from "../engine/index.js";
-import { hasRelay, relayEndpoint } from "./relay.js";
+import { hasRelay, relayEndpoint, setSessionToken } from "./relay.js";
 
 export interface Player {
   tournamentId: string;
@@ -62,7 +62,7 @@ export class RelayTournamentService implements TournamentService {
   readonly isMock = false;
 
   async join(playerId: string, pin: string): Promise<JoinResult> {
-    let body: { ok?: boolean; reason?: string; playerId?: string; playerName?: string };
+    let body: { ok?: boolean; reason?: string; playerId?: string; playerName?: string; token?: string };
     try {
       const res = await fetch(relayEndpoint("/join"), {
         method: "POST",
@@ -76,10 +76,14 @@ export class RelayTournamentService implements TournamentService {
     }
 
     if (!body.ok) {
+      setSessionToken(null); // a refused join must not leave an older session live
       const reason = body.reason;
       const known = reason === "unknown-player" || reason === "wrong-pin" || reason === "not-paid";
       return { ok: false, reason: known ? reason : "offline" };
     }
+
+    // Everything this player does from here on is signed by this token.
+    setSessionToken(body.token ?? null);
 
     return {
       ok: true,

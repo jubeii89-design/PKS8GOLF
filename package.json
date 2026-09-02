@@ -14,7 +14,8 @@
     "smoke": "node scripts/smoke.mjs",
     "relay": "node server/relay.mjs",
     "relay:check": "node scripts/relay-check.mjs",
-    "signup:check": "node scripts/signup-check.mjs"
+    "signup:check": "node scripts/signup-check.mjs",
+    "auth:check": "node scripts/auth-check.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.61.1",

@@ -22,3 +22,45 @@ export function hasRelay(): boolean {
 export function relayEndpoint(path: string): string {
   return `${RELAY_URL}${path}`;
 }
+
+// --- session ---------------------------------------------------------------
+
+/**
+ * The token handed out at join. Every write to the relay carries it, which is
+ * what stops one player reporting as another.
+ *
+ * It is kept in localStorage as well as in memory on purpose: moves buffered
+ * by a tab that died are flushed on the next load, and without the token that
+ * retry would be refused. The audit trail exists precisely for the round that
+ * went wrong, so it has to survive the tab going away.
+ */
+const TOKEN_KEY = "pokerst8ts.session.v1";
+
+function readStoredToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null; // private mode — memory-only session
+  }
+}
+
+let sessionToken: string | null = readStoredToken();
+
+export function setSessionToken(token: string | null): void {
+  sessionToken = token;
+  try {
+    if (token === null) localStorage.removeItem(TOKEN_KEY);
+    else localStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    /* private mode — the in-memory copy still serves this round */
+  }
+}
+
+export function hasSession(): boolean {
+  return sessionToken !== null;
+}
+
+/** Authorization header for a relay write, or nothing when not joined. */
+export function authHeaders(): Record<string, string> {
+  return sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+}

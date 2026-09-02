@@ -15,6 +15,12 @@ import { join } from "node:path";
 const RELAY_PORT = 8791;
 const AS400_PORT = 8792;
 const DATA_DIR = mkdtempSync(join(tmpdir(), "relay-check-"));
+// Writes now need a session. Sign with the same secret the relay is given.
+const SECRET = "relay-check-secret";
+// auth.mjs reads the secret when it loads, so set it before importing.
+process.env.SESSION_SECRET = SECRET;
+const { issueToken } = await import("../server/auth.mjs");
+const tokenFor = (playerId) => issueToken({ playerId, roundId: `round-${playerId}` });
 
 let pass = 0;
 let fail = 0;
@@ -40,6 +46,7 @@ const relay = spawn(process.execPath, ["server/relay.mjs"], {
     ...process.env,
     PORT: String(RELAY_PORT),
     DATA_DIR,
+    SESSION_SECRET: SECRET,
     AS400_URL: `http://127.0.0.1:${AS400_PORT}/pgm`,
   },
   stdio: ["ignore", "pipe", "pipe"],
@@ -58,7 +65,9 @@ const moves = [
   { tournamentId: "T1", playerId: "GORDONSTITT0001", seq: 1, action: "place", card: 105, cell: { grid: 0, col: 1, row: 1 }, scoreAfter: 3, ts: new Date().toISOString() },
 ];
 const moveRes = await fetch(`${base}/moves`, {
-  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ moves }),
+  method: "POST",
+  headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokenFor("GORDONSTITT0001")}` },
+  body: JSON.stringify({ moves }),
 });
 check(moveRes.ok, "relay accepts a move batch");
 check((await moveRes.json()).received === 2, "relay reports both moves received");
@@ -69,8 +78,9 @@ check(JSON.parse(movesFile[1]).seq === 1, "persisted move keeps its sequence num
 // --- 2. AS400 delivery is confirmed, not assumed ---
 const record = "TOURT22422GORDONSTITT0001100005" + "3E".repeat(18) + "037" + "AJ".repeat(18);
 const roundRes = await fetch(`${base}/round`, {
-  method: "POST", headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ playerId: "GORDONSTITT0001", playerName: "Gordon", score: 37, record }),
+  method: "POST",
+  headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokenFor("GORDONSTITT0001")}` },
+  body: JSON.stringify({ score: 37, record }),
 });
 const roundBody = await roundRes.json();
 check(roundBody.recorded === true, "relay records the round");
@@ -80,8 +90,9 @@ check(received.length === 1 && received[0] === record, "stub AS400 actually rece
 // --- 3. a failed AS400 send is queued, not lost ---
 as400ShouldFail = true;
 const failRes = await fetch(`${base}/round`, {
-  method: "POST", headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ playerId: "SECONDPLAYER001", playerName: "Ada", score: 51, record: record.replace("GORDONSTITT0001", "SECONDPLAYER001") }),
+  method: "POST",
+  headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokenFor("SECONDPLAYER001")}` },
+  body: JSON.stringify({ score: 51, record: record.replace("GORDONSTITT0001", "SECONDPLAYER001") }),
 });
 const failBody = await failRes.json();
 check(failBody.recorded === true, "a round is recorded even when the AS400 is down");
@@ -95,13 +106,13 @@ const { rows } = await lbRes.json();
 check(rows.length === 2, `standings include every player seen (${rows.length})`);
 check(rows[0].score === 51 && rows[0].rank === 1, "higher score ranks first");
 check(rows[1].playerName === "You" && rows[1].isYou === true, "the asking player is flagged as You");
-check(rows[0].playerName === "Ada", "other players keep their own names");
+check(rows[0].playerName === "SECONDPLAYER001", "other players are identified on the board");
 
 // --- 5. a restart does not empty the field ---
 relay.kill("SIGTERM");
 await new Promise((r) => setTimeout(r, 300));
 const relay2 = spawn(process.execPath, ["server/relay.mjs"], {
-  env: { ...process.env, PORT: String(RELAY_PORT), DATA_DIR, AS400_URL: `http://127.0.0.1:${AS400_PORT}/pgm` },
+  env: { ...process.env, PORT: String(RELAY_PORT), DATA_DIR, SESSION_SECRET: SECRET, AS400_URL: `http://127.0.0.1:${AS400_PORT}/pgm` },
   stdio: ["ignore", "pipe", "pipe"],
 });
 relay2.stdout.on("data", (d) => process.stdout.write(`  relay2| ${d}`));

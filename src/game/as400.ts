@@ -34,7 +34,7 @@
 
 import { type BoardScore, rankOf } from "../engine/index.js";
 import type { HandCompletion } from "./gameState.js";
-import { hasRelay, relayEndpoint } from "./relay.js";
+import { authHeaders, hasRelay, relayEndpoint } from "./relay.js";
 
 /** Supplied verbatim — not parsed, not rebuilt. */
 export const AS400_URL = "https://www.centriko.com/pgolfe/TNPKCGI1.pgm";
@@ -180,7 +180,7 @@ export async function reportRound(
     try {
       const res = await fetch(relayEndpoint("/round"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           playerId: r.playerId.trim(),
           playerName: playerName ?? r.playerId.trim(),

@@ -36,6 +36,7 @@ import { join } from "node:path";
 import { Roster } from "./roster.mjs";
 import * as square from "./square.mjs";
 import * as email from "./email.mjs";
+import { bearerFrom, issueToken, newRoundId, usingEphemeralSecret, verifyToken } from "./auth.mjs";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const DATA_DIR = process.env.DATA_DIR ?? "./relay-data";
@@ -234,6 +235,24 @@ function looksLikeEmail(value) {
   return typeof value === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim()) && value.length <= 254;
 }
 
+/**
+ * Every write after the door has to prove it came from a real join.
+ *
+ * Returns the token's claims, or null having already answered the request.
+ * The player a caller *claims* to be is ignored entirely: the identity used
+ * downstream is the one inside the signed token, so a caller cannot act for
+ * anyone but themselves even if they put another player's ID in the body.
+ */
+function requireSession(req, res) {
+  const verdict = verifyToken(bearerFrom(req));
+  if (!verdict.ok) {
+    log(`write refused: ${verdict.reason}`);
+    json(res, 401, { error: "not joined", reason: verdict.reason });
+    return null;
+  }
+  return verdict.claims;
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
@@ -248,13 +267,21 @@ const server = createServer(async (req, res) => {
     // Audit trail. Accepted and persisted before anything else can fail, so a
     // move that reached the server is a move that survives.
     if (req.method === "POST" && url.pathname === "/moves") {
+      const session = requireSession(req, res);
+      if (!session) return;
+
       const body = await readBody(req);
       const moves = Array.isArray(body.moves) ? body.moves : [];
       if (moves.length === 0) return json(res, 200, { received: 0 });
       const received = new Date().toISOString();
-      const lines = moves.map((m) => JSON.stringify({ ...m, received })).join("\n") + "\n";
+      // Stamped from the token, not from the body: a move is filed under
+      // whoever actually joined, whatever the payload claims.
+      const lines =
+        moves
+          .map((m) => JSON.stringify({ ...m, playerId: session.playerId, roundId: session.roundId, received }))
+          .join("\n") + "\n";
       await appendFile(MOVES_LOG, lines);
-      log(`moves +${moves.length} (${moves[0]?.playerId ?? "?"})`);
+      log(`moves +${moves.length} (${session.playerId})`);
       return json(res, 200, { received: moves.length });
     }
 
@@ -262,17 +289,23 @@ const server = createServer(async (req, res) => {
     // AS400. Recording first means a mainframe outage cannot cost us the
     // score — the record is on disk and the retry loop owns it from there.
     if (req.method === "POST" && url.pathname === "/round") {
+      const session = requireSession(req, res);
+      if (!session) return;
+
       const body = await readBody(req);
-      const { playerId, playerName, score, record } = body;
-      if (typeof playerId !== "string" || typeof record !== "string") {
-        return json(res, 400, { error: "playerId and record are required" });
-      }
+      const { score, record } = body;
+      if (typeof record !== "string") return json(res, 400, { error: "record is required" });
+
+      // Identity comes from the token; the roster is the authority on the name.
+      const playerId = session.playerId;
+      const player = roster.get(playerId);
 
       const entry = {
         playerId,
-        playerName: typeof playerName === "string" ? playerName : playerId,
+        playerName: player?.name ?? playerId,
         score: Number(score) || 0,
         record,
+        roundId: session.roundId,
         received: new Date().toISOString(),
       };
       rounds.set(playerId, entry);
@@ -390,10 +423,14 @@ const server = createServer(async (req, res) => {
         log(`join refused for ${String(body.playerId).slice(0, 15)}: ${verdict.reason}`);
         return json(res, 200, { ok: false, reason: verdict.reason });
       }
+      // The door is the only place credentials are checked, so this is where
+      // the session begins. Everything the player does afterwards carries it.
+      const token = issueToken({ playerId: verdict.entry.playerId, roundId: newRoundId() });
       return json(res, 200, {
         ok: true,
         playerId: verdict.entry.playerId,
         playerName: verdict.entry.name,
+        token,
       });
     }
 
@@ -451,5 +488,8 @@ server.listen(PORT, () => {
   log(`  email    ${email.isConfigured() ? "smtp" : "NOT CONFIGURED — credentials will not be sent"}`);
   if (square.isConfigured() && !square.canVerifyWebhooks()) {
     log(`  WARNING  no webhook key/url set — payment confirmations cannot be trusted and will be refused`);
+  }
+  if (usingEphemeralSecret()) {
+    log(`  WARNING  SESSION_SECRET unset — a random one is in use, so restarting ejects players mid-round`);
   }
 });

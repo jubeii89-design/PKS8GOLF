@@ -18,7 +18,7 @@
  */
 
 import type { Cell } from "../engine/index.js";
-import { hasRelay, relayEndpoint } from "./relay.js";
+import { authHeaders, hasRelay, relayEndpoint } from "./relay.js";
 
 const ENDPOINT = hasRelay() ? relayEndpoint("/moves") : (import.meta.env.VITE_MOVES_ENDPOINT ?? "/api/moves");
 const BUFFER_KEY = "pokerst8ts.moveBuffer.v1";
@@ -62,7 +62,7 @@ async function post(events: MoveEvent[]): Promise<boolean> {
   try {
     const res = await fetch(ENDPOINT, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({ moves: events }),
       // Survives the tab closing mid-flush.
       keepalive: true,

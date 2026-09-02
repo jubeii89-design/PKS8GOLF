@@ -38,6 +38,7 @@ import { Roster } from "./roster.mjs";
 import * as square from "./square.mjs";
 import * as email from "./email.mjs";
 import { bearerFrom, issueToken, newRoundId, usingEphemeralSecret, verifyToken } from "./auth.mjs";
+import { deriveRound } from "./replay.mjs";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const DATA_DIR = process.env.DATA_DIR ?? "./relay-data";
@@ -382,7 +383,14 @@ const server = createServer(async (req, res) => {
         startedAt: new Date().toISOString(),
       });
 
-      const token = issueToken({ playerId: verdict.entry.playerId, roundId, extra: { seed } });
+      // The record the AS400 wants includes the PIN, which is only ever stored
+      // hashed — so the verified PIN rides along in the signed token. It is not
+      // a new disclosure (the player just typed it) and it never reaches disk.
+      const token = issueToken({
+        playerId: verdict.entry.playerId,
+        roundId,
+        extra: { seed, pin: String(body.pin ?? "").trim() },
+      });
       log(`join ${verdict.entry.playerId} round ${roundId}`);
       return json(res, 200, {
         ok: true,
@@ -430,29 +438,79 @@ const server = createServer(async (req, res) => {
       if (!session) return;
 
       const body = await readBody(req);
-      const { score, record } = body;
-      if (typeof record !== "string") return json(res, 400, { error: "record is required" });
+      const claimedScore = typeof body.score === "number" ? body.score : null;
 
       const round = db.round(session.roundId);
       if (!round) return json(res, 409, { error: "unknown round" });
-      if (round.finished_at) return json(res, 200, { recorded: true, duplicate: true });
+      if (round.finished_at) {
+        return json(res, 200, { recorded: true, duplicate: true, score: round.score });
+      }
+
+      // Anything the client still had buffered belongs to this round.
+      if (Array.isArray(body.moves) && body.moves.length > 0) {
+        const receivedAt = new Date().toISOString();
+        db.insertMoves(
+          body.moves.map((m) => ({
+            roundId: session.roundId,
+            playerId: session.playerId,
+            seq: m.seq,
+            action: m.action,
+            card: m.card,
+            cell: m.cell,
+            scoreAfter: m.scoreAfter,
+            ts: m.ts,
+            receivedAt,
+          })),
+        );
+      }
+
+      // The score is derived, never accepted. The client's figure is compared
+      // and kept as evidence, but it decides nothing.
+      const derived = deriveRound({
+        seed: round.seed,
+        mode: round.mode,
+        moves: db.movesForRound(session.roundId),
+        playerId: session.playerId,
+        pin: session.pin ?? "",
+        claimedScore,
+      });
+
+      if (!derived.ok) {
+        // A round that will not replay cannot be scored. It is left open and
+        // logged rather than guessed at, because guessing is how a wrong score
+        // reaches the mainframe.
+        log(`round ${session.playerId} WILL NOT REPLAY: ${derived.reason} at seq ${derived.atSeq ?? "?"}`);
+        return json(res, 422, { error: "round could not be verified", reason: derived.reason });
+      }
+
+      if (!derived.agrees) {
+        log(
+          `round ${session.playerId} SCORE MISMATCH: client claimed ${claimedScore}, ` +
+            `replay says ${derived.round} — the replay stands`,
+        );
+      }
+      if (derived.cardMismatches > 0) {
+        log(`round ${session.playerId}: ${derived.cardMismatches} move(s) named a card the deck did not deal`);
+      }
 
       db.finishRound({
         roundId: session.roundId,
-        score: Number(score) || 0,
-        record,
+        score: derived.round,
+        record: derived.record,
         finishedAt: new Date().toISOString(),
-        scoreSource: "client",
+        scoreSource: "derived",
       });
 
-      const result = await deliverRecord(session.roundId, record);
+      const result = await deliverRecord(session.roundId, derived.record);
       log(
-        `round ${session.playerId} score=${Number(score) || 0} as400=${
+        `round ${session.playerId} score=${derived.round} (derived from ${derived.movesApplied} moves) as400=${
           result.delivered ? "delivered" : result.permanent ? "rejected" : "queued"
         }`,
       );
       return json(res, 200, {
         recorded: true,
+        score: derived.round,
+        verified: true,
         as400Delivered: result.delivered,
         as400Pending: !result.delivered && !result.permanent,
       });

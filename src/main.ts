@@ -3,7 +3,7 @@
  * game screen from the player's GameState after each action.
  */
 
-import { type Cell, GameMode, scoreBoard } from "./engine/index.js";
+import { type Cell, GameMode, scoreBoard, seededRng } from "./engine/index.js";
 import { GameState } from "./game/gameState.js";
 import { renderIntro } from "./ui/intro.js";
 import { renderBoard } from "./ui/board.js";
@@ -76,7 +76,9 @@ async function startTournament(prefilled?: PlayerCredentials | null): Promise<vo
     return;
   }
   const mode = GameMode.PokerStraightsMode;
-  const game = new GameState(mode);
+  // The deck comes from the server when there is one: it replays this round
+  // from the same seed to work out the score, so the cards must match.
+  const game = join.seed ? new GameState(mode, seededRng(join.seed)) : new GameState(mode);
   logRoundStart(game, join, mode);
   renderGame(game, mode, join);
 }
@@ -290,18 +292,18 @@ async function reportTournamentRound(game: GameState, mode: GameMode, player: Pl
   const score = scoreBoard(game.snapshot().board, mode);
   await flushMoves(); // ship the tail of the audit trail before the score lands
 
-  const { sent } = await reportRound(
-    {
-      playerId: player.playerId,
-      pin: player.pin,
-      score,
-      handCompletions: game.handCompletions,
-    },
-    player.playerName,
-  );
-  tournament.recordLocalScore(player.tournamentId, player.playerId, player.playerName, score.round);
+  const reported = await reportRound({
+    playerId: player.playerId,
+    pin: player.pin,
+    score,
+    handCompletions: game.handCompletions,
+  });
+  // Prefer the server's figure: it derived the score from the moves, so if the
+  // two ever disagree the server is the one that counts.
+  const finalScore = reported.score ?? score.round;
+  tournament.recordLocalScore(player.tournamentId, player.playerId, player.playerName, finalScore);
   const rows = await tournament.leaderboard(player.tournamentId, player.playerId);
-  showRoundStandings(score.round, sent, rows);
+  showRoundStandings(finalScore, reported.sent, rows);
 }
 
 function ordinal(n: number): string {

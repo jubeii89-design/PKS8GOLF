@@ -24,6 +24,13 @@ const DATA_DIR = mkdtempSync(join(tmpdir(), "signup-check-"));
 const WEBHOOK_KEY = "test-webhook-signing-key";
 const WEBHOOK_URL = `http://127.0.0.1:${RELAY_PORT}/webhooks/square`;
 
+// A failed check exits early; without this the relay would outlive the test,
+// hold the port, and make the NEXT run fail for the wrong reason.
+const children = [];
+const killRelayOnExit = () => { for (const c of children) { try { c.kill("SIGKILL"); } catch {} } };
+process.on("exit", killRelayOnExit);
+process.on("uncaughtException", (e) => { console.error(e); killRelayOnExit(); process.exit(1); });
+
 let pass = 0, fail = 0;
 const check = (cond, msg) => {
   if (cond) { console.log("ok:", msg); pass++; }
@@ -112,6 +119,7 @@ const relay = spawn(process.execPath, ["server/relay.mjs"], {
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
+children.push(relay);
 const relayLog = [];
 relay.stdout.on("data", (d) => { relayLog.push(String(d)); process.stdout.write(`  relay| ${d}`); });
 relay.stderr.on("data", (d) => process.stderr.write(`  relay! ${d}`));

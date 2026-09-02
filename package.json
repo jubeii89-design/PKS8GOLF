@@ -2,7 +2,7 @@
   "name": "pokerst8ts",
   "version": "1.0.0",
   "private": true,
-  "description": "PokerSt8ts — a solo card/board game by Strategic Titans",
+  "description": "PokerSt8ts \u2014 a solo card/board game by Strategic Titans",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,10 +12,13 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/smoke.mjs",
-    "relay": "node server/relay.mjs",
-    "relay:check": "node scripts/relay-check.mjs",
-    "signup:check": "node scripts/signup-check.mjs",
-    "auth:check": "node scripts/auth-check.mjs"
+    "relay": "npm run build:server && node server/relay.mjs",
+    "relay:check": "npm run build:server && node scripts/relay-check.mjs",
+    "signup:check": "npm run build:server && node scripts/signup-check.mjs",
+    "auth:check": "npm run build:server && node scripts/auth-check.mjs",
+    "build:server": "tsc -p tsconfig.server.json",
+    "verify:check": "npm run build:server && node scripts/verify-check.mjs",
+    "checks": "npm run auth:check && npm run relay:check && npm run signup:check && npm run verify:check"
   },
   "devDependencies": {
     "playwright-core": "^1.61.1",

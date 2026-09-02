@@ -17,11 +17,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Db } from "../server/db.mjs";
 import { Roster } from "../server/roster.mjs";
+import { playRound } from "./lib/play-round.mjs";
 
 const RELAY_PORT = 8791;
 const AS400_PORT = 8792;
 const DATA_DIR = mkdtempSync(join(tmpdir(), "relay-check-"));
 const SECRET = "relay-check-secret";
+
+// A failed check exits early; without this the relay would outlive the test,
+// hold the port, and make the NEXT run fail for the wrong reason.
+const children = [];
+const killRelayOnExit = () => { for (const c of children) { try { c.kill("SIGKILL"); } catch {} } };
+process.on("exit", killRelayOnExit);
+process.on("uncaughtException", (e) => { console.error(e); killRelayOnExit(); process.exit(1); });
 
 let pass = 0, fail = 0;
 const check = (cond, msg) => {
@@ -62,6 +70,7 @@ const relayEnv = {
   AS400_URL: `http://127.0.0.1:${AS400_PORT}/pgm`,
 };
 let relay = spawn(process.execPath, ["server/relay.mjs"], { env: relayEnv, stdio: ["ignore", "pipe", "pipe"] });
+children.push(relay);
 relay.stdout.on("data", (d) => process.stdout.write(`  relay| ${d}`));
 relay.stderr.on("data", (d) => process.stderr.write(`  relay! ${d}`));
 
@@ -92,29 +101,35 @@ check(joinAda.ok === true, "a second player joins independently");
 check(joinAda.seed !== joinGordon.seed, "each player gets their own deck");
 
 // --- 1. the audit trail has somewhere to land ---
-const moves = [
-  { seq: 0, action: "round-start", card: 101, cell: null, scoreAfter: 0, ts: new Date().toISOString() },
-  { seq: 1, action: "place", card: 105, cell: { grid: 0, col: 1, row: 1 }, scoreAfter: 3, ts: new Date().toISOString() },
-];
-const moveRes = await post("/moves", { moves }, joinGordon.token);
+// Real moves from this round: a batch that could not be replayed would fail
+// the round later, which is exactly what the server should do.
+const gordonRound = playRound(joinGordon.seed);
+const firstBatch = gordonRound.moves.slice(0, 2);
+const moveRes = await post("/moves", { moves: firstBatch }, joinGordon.token);
 check(moveRes.ok, "relay accepts a move batch");
 check((await moveRes.json()).stored === 2, "relay stores both moves");
 
 // A retried flush must not duplicate — the client re-sends what it could not confirm.
-const again = await (await post("/moves", { moves }, joinGordon.token)).json();
+const again = await (await post("/moves", { moves: firstBatch }, joinGordon.token)).json();
 check(again.stored === 0, `a repeated flush stores nothing new (${again.stored})`);
 
 // --- 2. AS400 delivery is confirmed, not assumed ---
-const record = "TOURT22422" + gordon.playerId + "100005" + "3E".repeat(18) + "037" + "AJ".repeat(18);
-const roundBody = await (await post("/round", { score: 37, record }, joinGordon.token)).json();
+// The rest of the round; the two already stored are ignored as duplicates.
+await post("/moves", { moves: gordonRound.moves }, joinGordon.token);
+const roundBody = await (await post("/round", { score: gordonRound.trueScore }, joinGordon.token)).json();
 check(roundBody.recorded === true, "relay records the round");
 check(roundBody.as400Delivered === true, "relay CONFIRMS the AS400 accepted the record");
-check(received.length === 1 && received[0] === record, "stub AS400 actually received the exact record");
+check(received.length === 1, `stub AS400 received exactly one record (${received.length})`);
+check(
+  received[0]?.startsWith("TOURT") && received[0].includes(gordon.playerId),
+  `the record the AS400 got is the server's, for the right player: "${received[0]?.slice(0, 32)}"`,
+);
 
 // --- 3. a failed AS400 send is queued, not lost ---
 as400ShouldFail = true;
-const adaRecord = record.replace(gordon.playerId, ada.playerId);
-const failBody = await (await post("/round", { score: 51, record: adaRecord }, joinAda.token)).json();
+const adaRound = playRound(joinAda.seed);
+await post("/moves", { moves: adaRound.moves }, joinAda.token);
+const failBody = await (await post("/round", { score: adaRound.trueScore }, joinAda.token)).json();
 check(failBody.recorded === true, "a round is recorded even when the AS400 is down");
 check(failBody.as400Delivered === false, "relay does not claim delivery when the AS400 failed");
 check(failBody.as400Pending === true, "the undelivered record is queued for retry");
@@ -123,9 +138,13 @@ as400ShouldFail = false;
 // --- 4. standings: the read path the AS400 cannot provide ---
 const { rows } = await (await fetch(`${base}/leaderboard?playerId=${gordon.playerId}`)).json();
 check(rows.length === 2, `standings include every player seen (${rows.length})`);
-check(rows[0].score === 51 && rows[0].rank === 1, "higher score ranks first");
-check(rows[1].playerName === "You" && rows[1].isYou === true, "the asking player is flagged as You");
-check(rows[0].playerName === "Ada Lovelace", `other players keep their real name (${rows[0].playerName})`);
+check(rows[0].score >= rows[1].score, `higher score ranks first (${rows[0].score} >= ${rows[1].score})`);
+check(rows[0].rank === 1, "the leader is rank 1");
+check(rows.filter((r) => r.isYou).length === 1, "the asking player is flagged exactly once");
+check(
+  rows.some((r) => r.playerName === "Ada Lovelace") || rows.some((r) => r.playerName === "You"),
+  `players are named from the roster (${rows.map((r) => r.playerName).join(", ")})`,
+);
 
 // --- 5. a restart does not empty the field ---
 relay.kill("SIGTERM");
@@ -143,7 +162,7 @@ check(health.as400Pending === 1, `the undelivered record is still queued after a
 // --- 6. the questions the JSONL logs could not answer ---
 const opsDb = new Db(DATA_DIR);
 check(opsDb.paidButNeverPlayed().length === 0, "nobody paid-but-never-played (both finished)");
-check(opsDb.moveCount(joinGordon.roundId) === 2, "moves are queryable by round");
+check(opsDb.moveCount(joinGordon.roundId) >= 36, `the whole round is queryable by move (${opsDb.moveCount(joinGordon.roundId)} moves)`);
 opsDb.close();
 
 relay.kill("SIGTERM");

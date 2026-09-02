@@ -12,3 +12,6 @@ relay-data/
 *.db-shm
 .env
 .env.*
+
+# Compiled engine for the relay — built by npm run build:server
+server/lib/

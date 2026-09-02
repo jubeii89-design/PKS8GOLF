@@ -25,6 +25,12 @@ export interface Player {
   playerName: string;
   /** ISO timestamp the player must have joined by. */
   teeTime: string;
+  /**
+   * The deck the server issued for this round. It replays the round from this
+   * same seed to derive the score, so the client must play exactly this deck.
+   * Absent in mock mode, where the client shuffles for itself.
+   */
+  seed?: string;
 }
 
 export type JoinResult =
@@ -62,7 +68,9 @@ export class RelayTournamentService implements TournamentService {
   readonly isMock = false;
 
   async join(playerId: string, pin: string): Promise<JoinResult> {
-    let body: { ok?: boolean; reason?: string; playerId?: string; playerName?: string; token?: string };
+    let body: {
+      ok?: boolean; reason?: string; playerId?: string; playerName?: string; token?: string; seed?: string;
+    };
     try {
       const res = await fetch(relayEndpoint("/join"), {
         method: "POST",
@@ -91,8 +99,9 @@ export class RelayTournamentService implements TournamentService {
       playerId: body.playerId ?? playerId.trim(),
       pin: pin.trim(),
       playerName: body.playerName ?? body.playerId ?? playerId.trim(),
-      // The roster is the authority on who may play; a tee-off cutoff is the
-      // organiser's to enforce and is not part of the credential check.
+      seed: body.seed,
+      // The roster enforces the tee-off cutoff, so a join that got this far
+      // was inside it; this is just what the UI displays.
       teeTime: new Date().toISOString(),
     };
   }

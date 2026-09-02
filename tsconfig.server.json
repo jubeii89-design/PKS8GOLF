@@ -1,0 +1,24 @@
+{
+  // The relay replays rounds and scores them itself, so it needs the real
+  // engine — not a reimplementation that would drift from the browser's.
+  // This emits the pure, DOM-free parts to server/lib/ for Node to import.
+  //
+  // Deliberately excludes anything browser-specific: as400.ts (fetch,
+  // localStorage) and relay.ts (import.meta.env) stay out, which is why the
+  // record format was split into as400Record.ts.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "declaration": false,
+    "sourceMap": false,
+    "rootDir": "src",
+    "outDir": "server/lib",
+    "types": []
+  },
+  "include": ["src/engine/**/*.ts", "src/game/gameState.ts", "src/game/as400Record.ts"]
+}

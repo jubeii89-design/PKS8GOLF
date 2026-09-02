@@ -17,6 +17,13 @@ const PORT = 8831;
 const DATA_DIR = mkdtempSync(join(tmpdir(), "auth-check-"));
 const SECRET = "auth-check-secret";
 
+// A failed check exits early; without this the relay would outlive the test,
+// hold the port, and make the NEXT run fail for the wrong reason.
+const children = [];
+const killRelayOnExit = () => { for (const c of children) { try { c.kill("SIGKILL"); } catch {} } };
+process.on("exit", killRelayOnExit);
+process.on("uncaughtException", (e) => { console.error(e); killRelayOnExit(); process.exit(1); });
+
 let pass = 0, fail = 0;
 const check = (cond, msg) => {
   if (cond) { console.log("ok:", msg); pass++; }
@@ -41,6 +48,7 @@ const relay = spawn(process.execPath, ["server/relay.mjs"], {
   env: { ...process.env, PORT: String(PORT), DATA_DIR, AS400_URL: "http://127.0.0.1:9/x", SESSION_SECRET: SECRET },
   stdio: ["ignore", "pipe", "pipe"],
 });
+children.push(relay);
 relay.stdout.on("data", (d) => process.stdout.write(`  relay| ${d}`));
 
 const base = `http://127.0.0.1:${PORT}`;

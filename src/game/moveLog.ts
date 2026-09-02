@@ -117,3 +117,14 @@ export async function flushMoves(): Promise<boolean> {
 export function pendingMoveCount(): number {
   return read().length;
 }
+
+/**
+ * The moves that have not been confirmed delivered.
+ *
+ * Sent alongside the finished round: the server derives the score by replaying
+ * the move log, so a batch still sitting in this buffer would make the round
+ * look shorter than it was and score it too low.
+ */
+export function pendingMoves(): MoveEvent[] {
+  return read();
+}

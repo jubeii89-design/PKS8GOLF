@@ -121,8 +121,9 @@ function logLatestMove(game: GameState, player: Player, mode: GameMode): void {
 function showJoinRejected(join: Extract<JoinResult, { ok: false }>): void {
   const reasons = {
     "missed-tee-time": "Your tee-off time has passed, so you can no longer join. See a tournament official.",
-    "unknown-player": "That player ID was not recognised. Check it and try again.",
-    "wrong-pin": "That PIN does not match the player ID. Check it and try again.",
+    "unknown-player": "That player ID was not recognised. Check the email we sent you and try again.",
+    "wrong-pin": "That PIN does not match the player ID. Check the email we sent you and try again.",
+    "not-paid": "We have not received your entry fee yet. Check your email for the payment link, or see an official.",
     offline: "Could not reach the tournament server. Try again in a moment.",
   };
   showOverlay((panel) => {

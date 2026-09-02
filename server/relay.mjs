@@ -33,6 +33,9 @@
 import { createServer } from "node:http";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { Roster } from "./roster.mjs";
+import * as square from "./square.mjs";
+import * as email from "./email.mjs";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const DATA_DIR = process.env.DATA_DIR ?? "./relay-data";
@@ -44,8 +47,22 @@ const AS400_TIMEOUT_MS = 30_000;
 /** Browsers may only send what the game actually sends; keeps junk out. */
 const MAX_BODY_BYTES = 1_000_000;
 
+// --- the event itself. All of this belongs in config, not in the code. ---
+const ENTRY_FEE_CENTS = Number(process.env.ENTRY_FEE_CENTS ?? 2500);
+const CURRENCY = process.env.CURRENCY ?? "CAD";
+const PLAY_URL = process.env.PLAY_URL ?? "https://www.strategictitans.ca/play/";
+const TOURNAMENT = {
+  name: process.env.TOURNAMENT_NAME ?? "Strategic Titans Charity Tournament",
+  charity: process.env.TOURNAMENT_CHARITY ?? "our charity partner",
+  date: process.env.TOURNAMENT_DATE ?? "To be announced",
+  teeOff: process.env.TOURNAMENT_TEE_OFF ?? "To be announced",
+  contact: process.env.TOURNAMENT_CONTACT ?? "www.strategictitans.ca",
+};
+
 const MOVES_LOG = join(DATA_DIR, "moves.jsonl");
 const ROUNDS_LOG = join(DATA_DIR, "rounds.jsonl");
+
+const roster = new Roster(DATA_DIR);
 
 /**
  * Rounds seen this tournament, newest wins per player. Rebuilt from disk at
@@ -107,6 +124,39 @@ async function drainUndelivered() {
 }
 
 // ---------------------------------------------------------------------------
+// Credentials
+// ---------------------------------------------------------------------------
+
+/**
+ * Payment cleared: mint the PIN and mail it out.
+ *
+ * A failure here is loud, because it is the worst quiet failure in the system —
+ * the player has been charged and has no way to play. The PIN is recoverable
+ * by re-issuing, so the fix is to send it again, not to refund.
+ */
+async function issueCredentials(entry) {
+  const issued = await roster.issuePin(entry.playerId);
+  if (!issued) return { sent: false, reason: "unknown-player" };
+
+  const result = await email.sendCredentials({
+    to: entry.email,
+    name: entry.name,
+    playerId: entry.playerId,
+    pin: issued.pin,
+    tournament: TOURNAMENT,
+    playUrl: PLAY_URL,
+  });
+
+  if (!result.sent) {
+    log(
+      `PAID BUT NOT EMAILED: ${entry.playerId} — ${result.reason}. ` +
+        `They have paid and cannot play until someone re-issues their credentials.`,
+    );
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Standings
 // ---------------------------------------------------------------------------
 
@@ -148,7 +198,11 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-function readBody(req) {
+/**
+ * The exact bytes sent. Square signs the raw body, so a webhook has to be
+ * verified against this rather than against a re-serialised parse.
+ */
+function readRawBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
@@ -161,15 +215,23 @@ function readBody(req) {
       }
       chunks.push(c);
     });
-    req.on("end", () => {
-      try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"));
-      } catch {
-        reject(new Error("invalid JSON"));
-      }
-    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
+}
+
+async function readBody(req) {
+  const raw = await readRawBody(req);
+  try {
+    return JSON.parse(raw || "{}");
+  } catch {
+    throw new Error("invalid JSON");
+  }
+}
+
+/** Enough of an address to be plausible; Square will reject a truly bad one. */
+function looksLikeEmail(value) {
+  return typeof value === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim()) && value.length <= 254;
 }
 
 const server = createServer(async (req, res) => {
@@ -230,6 +292,111 @@ const server = createServer(async (req, res) => {
       });
     }
 
+    // What a signup costs and what they are signing up for. Lets the signup
+    // page show the real fee instead of hard-coding one that can drift.
+    if (req.method === "GET" && url.pathname === "/tournament") {
+      return json(res, 200, {
+        tournament: TOURNAMENT,
+        entryFeeCents: ENTRY_FEE_CENTS,
+        currency: CURRENCY,
+        acceptingSignups: square.isConfigured(),
+      });
+    }
+
+    // Register a player and hand back a Square checkout page.
+    //
+    // Credentials are minted here but stay inert until payment clears, so a
+    // signup that is abandoned at the checkout page cannot be used to play.
+    if (req.method === "POST" && url.pathname === "/signup") {
+      const body = await readBody(req);
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const playerEmail = typeof body.email === "string" ? body.email.trim() : "";
+
+      if (name.length < 2 || name.length > 60) return json(res, 400, { error: "Please give your full name." });
+      if (!looksLikeEmail(playerEmail)) return json(res, 400, { error: "Please give a valid email address." });
+      if (!square.isConfigured()) {
+        return json(res, 503, { error: "Signups are not open yet — payment is not configured." });
+      }
+
+      const created = await roster.signup({ name, email: playerEmail });
+      if (!created.ok) {
+        return json(res, 409, {
+          error: "That email is already registered. Check your inbox for your Player ID and PIN.",
+        });
+      }
+
+      let link;
+      try {
+        link = await square.createPaymentLink({
+          playerId: created.playerId,
+          name,
+          email: playerEmail,
+          amountCents: ENTRY_FEE_CENTS,
+          currency: CURRENCY,
+          redirectUrl: `${PLAY_URL}?signup=complete`,
+        });
+      } catch (err) {
+        // The player exists but has no way to pay; say so rather than leaving
+        // them at a dead end believing they are entered.
+        log(`signup ${created.playerId}: square failed: ${err.message}`);
+        return json(res, 502, { error: "Could not reach the payment provider. Please try again shortly." });
+      }
+
+      await roster.attachOrder(created.playerId, link.orderId);
+      // created.pin is deliberately not returned and not logged: it goes out
+      // in the email once payment clears, and nowhere else.
+      log(`signup ${created.playerId} (${TOURNAMENT.name}) → checkout ${link.orderId}`);
+      return json(res, 200, { playerId: created.playerId, checkoutUrl: link.url });
+    }
+
+    // Square telling us a payment cleared. Anyone can POST here, so nothing is
+    // believed until the signature checks out.
+    if (req.method === "POST" && url.pathname === "/webhooks/square") {
+      const raw = await readRawBody(req);
+      const verdict = square.verifyWebhook(raw, req.headers["x-square-hmacsha256-signature"]);
+      if (!verdict.ok) {
+        log(`webhook REJECTED (${verdict.reason})`);
+        return json(res, 403, { error: "signature check failed" });
+      }
+
+      let event;
+      try {
+        event = JSON.parse(raw || "{}");
+      } catch {
+        return json(res, 400, { error: "invalid JSON" });
+      }
+
+      const orderId = square.completedPaymentOrderId(event);
+      if (!orderId) return json(res, 200, { ignored: true }); // some other event type
+
+      const paid = await roster.markPaid(orderId);
+      if (!paid.ok) {
+        log(`webhook: completed payment for an order we do not know (${orderId})`);
+        return json(res, 200, { ignored: true, reason: paid.reason });
+      }
+      // Square retries until it gets a 2xx, so a duplicate must not re-send mail.
+      if (paid.alreadyPaid) return json(res, 200, { ok: true, duplicate: true });
+
+      const pinIssue = await issueCredentials(paid.entry);
+      return json(res, 200, { ok: true, emailed: pinIssue.sent });
+    }
+
+    // The door. Until now this admitted anyone whose ID and PIN merely looked
+    // right; now it checks them against the roster and against payment.
+    if (req.method === "POST" && url.pathname === "/join") {
+      const body = await readBody(req);
+      const verdict = roster.verify(body.playerId ?? "", body.pin ?? "");
+      if (!verdict.ok) {
+        log(`join refused for ${String(body.playerId).slice(0, 15)}: ${verdict.reason}`);
+        return json(res, 200, { ok: false, reason: verdict.reason });
+      }
+      return json(res, 200, {
+        ok: true,
+        playerId: verdict.entry.playerId,
+        playerName: verdict.entry.name,
+      });
+    }
+
     // Standings. This is the read path the AS400 cannot provide.
     if (req.method === "GET" && url.pathname === "/leaderboard") {
       return json(res, 200, { rows: leaderboard(url.searchParams.get("playerId") ?? "") });
@@ -240,6 +407,11 @@ const server = createServer(async (req, res) => {
         ok: true,
         rounds: rounds.size,
         as400Pending: undelivered.length,
+        registered: roster.size,
+        paid: roster.paidCount,
+        square: square.isConfigured() ? square.environment() : "not-configured",
+        webhooksVerifiable: square.canVerifyWebhooks(),
+        email: email.isConfigured() ? "smtp" : "console-only",
       });
     }
 
@@ -267,10 +439,17 @@ async function restore() {
 }
 
 await restore();
+const registered = await roster.restore();
 setInterval(() => void drainUndelivered(), 30_000).unref();
 
 server.listen(PORT, () => {
   log(`relay listening on :${PORT}`);
   log(`  data     ${DATA_DIR}`);
   log(`  as400    ${AS400_URL}`);
+  log(`  roster   ${registered} registered, ${roster.paidCount} paid`);
+  log(`  square   ${square.isConfigured() ? square.environment() : "NOT CONFIGURED — signups closed"}`);
+  log(`  email    ${email.isConfigured() ? "smtp" : "NOT CONFIGURED — credentials will not be sent"}`);
+  if (square.isConfigured() && !square.canVerifyWebhooks()) {
+    log(`  WARNING  no webhook key/url set — payment confirmations cannot be trusted and will be refused`);
+  }
 });

@@ -12,6 +12,7 @@ export default defineConfig({
       input: {
         portal: r("./index.html"),
         play: r("./play/index.html"),
+        signup: r("./signup/index.html"),
       },
     },
   },

@@ -4,3 +4,8 @@ dist/
 *.zip
 bg-*.png
 smoke-*.png
+
+# Relay runtime data and secrets — never commit
+relay-data/
+.env
+.env.*

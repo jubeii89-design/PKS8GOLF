@@ -30,6 +30,50 @@ PORT=8080 DATA_DIR=/var/lib/pks8golf node server/relay.mjs
 | `DATA_DIR` | `./relay-data` | Where the JSONL logs are written |
 | `AS400_URL` | `https://www.centriko.com/pgolfe/TNPKCGI1.pgm` | Where records are forwarded |
 
+### Signups, payment and email
+
+Signups stay closed until Square is configured — the server will not pretend to
+charge anyone. Everything here is an environment variable; **none of these
+values belong in the repository.**
+
+| Variable | Meaning |
+|---|---|
+| `SQUARE_ACCESS_TOKEN` | Square API token. Required for signups to open. |
+| `SQUARE_LOCATION_ID` | Which Square location the entry fee belongs to. |
+| `SQUARE_ENVIRONMENT` | `sandbox` (default) or `production`. |
+| `SQUARE_WEBHOOK_KEY` | Signature key. Without it every payment confirmation is refused. |
+| `SQUARE_WEBHOOK_URL` | The public URL Square posts to; it forms part of the signature, so it must match exactly. |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | Mail server. Unset means credentials are **not sent**. |
+| `MAIL_FROM` | e.g. `Strategic Titans <tournament@strategictitans.ca>` |
+| `ENTRY_FEE_CENTS` | Entry fee in cents. Default `2500` (CA$25.00). |
+| `CURRENCY` | Default `CAD`. |
+| `PLAY_URL` | Link put in the email. |
+| `TOURNAMENT_NAME` / `_CHARITY` / `_DATE` / `_TEE_OFF` / `_CONTACT` | Shown on the signup page and in the email. |
+
+`GET /health` reports which of these are live, so you can confirm the setup
+before opening entries rather than discovering a gap mid-event.
+
+## How a player gets in
+
+1. They open `/signup/`, enter a name and email, and are sent to **Square's own
+   checkout page**. No card details ever reach this server or the game — that
+   is the whole reason for using a hosted checkout.
+2. Square posts a webhook when the payment completes. It is believed only if the
+   signature verifies; a forged one is refused and logged.
+3. Only then is a **PIN minted** and emailed with the tournament details. A
+   credential that existed before payment could be used before payment, so none
+   does.
+4. `POST /join` checks the ID and PIN against the roster. Unknown player, wrong
+   PIN, and paid-but-not-yet are now real, distinguishable answers.
+
+PINs are stored salted and hashed. The plaintext exists only in the moment
+between minting and mailing — never on disk, never in the log. A leaked roster
+file therefore does not hand over the field's credentials.
+
+If mail fails after a payment succeeds the log says `PAID BUT NOT EMAILED` with
+the player ID. That person has been charged and cannot play until their
+credentials are re-issued, so it is worth alerting on.
+
 Then build the game pointed at it:
 
 ```bash
@@ -76,7 +120,8 @@ Records are also still written to each player's device, so
 ## Checking it works
 
 ```bash
-npm run relay:check
+npm run relay:check    # moves, AS400 delivery, standings, restart recovery
+npm run signup:check   # signup, payment, webhook forgery, email, join
 ```
 
 Spins up a stub AS400 and exercises the whole thing: move batches persist,

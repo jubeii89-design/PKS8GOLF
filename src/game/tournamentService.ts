@@ -29,7 +29,11 @@ export interface Player {
 
 export type JoinResult =
   | ({ ok: true } & Player)
-  | { ok: false; reason: "unknown-player" | "wrong-pin" | "missed-tee-time" | "offline"; teeTime?: string };
+  | {
+      ok: false;
+      reason: "unknown-player" | "wrong-pin" | "not-paid" | "missed-tee-time" | "offline";
+      teeTime?: string;
+    };
 
 export interface LeaderboardRow {
   playerName: string;
@@ -50,21 +54,43 @@ export interface TournamentService {
 }
 
 /**
- * Real standings, served by the relay. Every finished round passes through it
- * on the way to the AS400, so it can answer what the AS400 cannot: how the
- * rest of the field is doing.
- *
- * Joining is still decided locally — the relay holds no roster, so any valid
- * ID/PIN is admitted under the same tee-off rule the mock uses. Replace `join`
- * once there is a real roster to check against.
+ * The real thing, served by the relay: credentials are checked against the
+ * roster of players who signed up and paid, and standings come from the rounds
+ * the relay has actually seen.
  */
 export class RelayTournamentService implements TournamentService {
   readonly isMock = false;
 
-  private readonly fallbackJoin = new MockTournamentService(0);
-
   async join(playerId: string, pin: string): Promise<JoinResult> {
-    return this.fallbackJoin.join(playerId, pin);
+    let body: { ok?: boolean; reason?: string; playerId?: string; playerName?: string };
+    try {
+      const res = await fetch(relayEndpoint("/join"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ playerId: playerId.trim(), pin: pin.trim() }),
+      });
+      if (!res.ok) return { ok: false, reason: "offline" };
+      body = await res.json();
+    } catch {
+      return { ok: false, reason: "offline" };
+    }
+
+    if (!body.ok) {
+      const reason = body.reason;
+      const known = reason === "unknown-player" || reason === "wrong-pin" || reason === "not-paid";
+      return { ok: false, reason: known ? reason : "offline" };
+    }
+
+    return {
+      ok: true,
+      tournamentId: "TOURNAMENT",
+      playerId: body.playerId ?? playerId.trim(),
+      pin: pin.trim(),
+      playerName: body.playerName ?? body.playerId ?? playerId.trim(),
+      // The roster is the authority on who may play; a tee-off cutoff is the
+      // organiser's to enforce and is not part of the credential check.
+      teeTime: new Date().toISOString(),
+    };
   }
 
   recordLocalScore(): void {

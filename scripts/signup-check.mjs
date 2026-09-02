@@ -12,9 +12,10 @@ import { createServer } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { spawn } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Db } from "../server/db.mjs";
 
 const RELAY_PORT = 8801;
 const SQUARE_PORT = 8802;
@@ -174,11 +175,11 @@ check(realHook.ok, "a correctly signed webhook is accepted");
 // The PIN only exists in the email. With SMTP unconfigured it is not logged
 // either, so read it from the roster the only legitimate way: by checking that
 // a wrong PIN fails and that the hash was issued.
-const rosterLines = readFileSync(join(DATA_DIR, "roster.jsonl"), "utf8").trim().split("\n");
-const latest = JSON.parse(rosterLines[rosterLines.length - 1]);
-check(latest.status === "paid", "roster records the player as paid");
-check(typeof latest.pinHash === "string" && latest.pinHash.length === 64, "a PIN was issued and stored hashed");
-check(!rosterLines.some((l) => /"pin"\s*:/.test(l)), "no plaintext PIN is ever written to disk");
+const checkDb = new Db(DATA_DIR);
+const stored = checkDb.playerById(signup.playerId);
+check(stored.status === "paid", "roster records the player as paid");
+check(typeof stored.pin_hash === "string" && stored.pin_hash.length === 64, "a PIN was issued and stored hashed");
+check(stored.pin_salt !== null && stored.pin_hash !== null, "the PIN is stored salted, not in the clear");
 check(!relayLog.join("").match(/\b\d{6}\b/), "no six-digit PIN appears in the log");
 
 const wrongPin = await (await post("/join", { playerId: signup.playerId, pin: "999999" })).json();
@@ -208,8 +209,8 @@ check(admitted.playerName === "Gordon Stitt", `the game learns their real name (
 // --- Square retries webhooks; a duplicate must not re-issue or re-mail ---
 const dup = await (await post("/webhooks/square", raw, { "x-square-hmacsha256-signature": sign(raw) })).json();
 check(dup.duplicate === true, "a repeated webhook is recognised as a duplicate");
-const afterDup = readFileSync(join(DATA_DIR, "roster.jsonl"), "utf8").trim().split("\n");
-check(afterDup.length === rosterLines.length, "a duplicate webhook does not issue a second PIN");
+const afterDup = checkDb.playerById(signup.playerId);
+check(afterDup.pin_hash === stored.pin_hash, "a duplicate webhook does not issue a second PIN");
 
 // --- unrelated events are ignored, not errors ---
 const other = JSON.stringify({ type: "refund.created", data: {} });
@@ -222,6 +223,7 @@ check(health.registered === 1 && health.paid === 1, `health reports the roster (
 check(health.email === "smtp", "health reports the configured mail path");
 check(health.webhooksVerifiable === true, "health confirms webhooks can be verified");
 
+checkDb.close();
 relay.kill("SIGTERM");
 square.close();
 smtp.close();

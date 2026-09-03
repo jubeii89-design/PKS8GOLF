@@ -24,8 +24,14 @@ function buildTable() {
   const note = (h) => {
     const golf = evaluateHand(h, 1);
     const poker = evaluateHand(h, 0);
-    if (!table.has(golf.handID)) {
-      table.set(golf.handID, { golf: golf.points, poker: poker.points, name: golf.handName });
+    const e = table.get(golf.handID);
+    if (!e) {
+      table.set(golf.handID, {
+        golf: new Set([golf.points]), poker: new Set([poker.points]), name: golf.handName,
+      });
+    } else {
+      e.golf.add(golf.points);
+      e.poker.add(poker.points);
     }
   };
   for (let a = 0; a < 52; a++) for (let b = a + 1; b < 52; b++) for (let c = b + 1; c < 52; c++) {
@@ -41,6 +47,14 @@ function buildTable() {
 const table = buildTable();
 const sizes = allHands().map((h) => h.cells.length);
 
+/** Most IDs carry one score; 3A carries two, so ranges are shown as "0-1". */
+const span = (set) => {
+  const v = [...set].sort((a, b) => a - b);
+  return v.length === 1 ? String(v[0]) : `${v[0]}-${v[v.length - 1]}`;
+};
+const lo = (set) => Math.min(...set);
+const hi = (set) => Math.max(...set);
+
 function relativeToPar(id, strokes) {
   const par = PAR[Number(id[0])];
   if (par === undefined) return "?";
@@ -52,8 +66,9 @@ if (process.argv.includes("--table")) {
   console.log("Hand IDs this engine produces (strokes in Golf, points in PokerStr8ts):\n");
   console.log("  ID   strokes  vs par     points   hand");
   for (const [id, v] of [...table].sort()) {
+    const amb = v.golf.size > 1 ? "  << more than one score" : "";
     console.log(
-      `  ${id}   ${String(v.golf).padStart(4)}     ${relativeToPar(id, v.golf).padEnd(9)} ${String(v.poker).padStart(5)}   ${v.name}`,
+      `  ${id}   ${span(v.golf).padStart(4)}     ${relativeToPar(id, hi(v.golf)).padEnd(9)} ${span(v.poker).padStart(5)}   ${v.name}${amb}`,
     );
   }
   console.log(`\nHand size per hole: ${sizes.join(" ")}`);
@@ -90,10 +105,11 @@ console.log();
 
 const ids = f.hands.match(/../g) ?? [];
 console.log("hole  id   size  our reading                 strokes  points");
-let strokes = 0;
-let points = 0;
+let strokesLo = 0, strokesHi = 0;
+let pointsLo = 0, pointsHi = 0;
 let unknown = 0;
 let sizeMismatch = 0;
+let ambiguous = 0;
 
 ids.forEach((id, i) => {
   const known = table.get(id);
@@ -102,11 +118,15 @@ ids.forEach((id, i) => {
   const sizeOk = declaredSize === expectedSize;
   if (!sizeOk && id.trim() !== "") sizeMismatch++;
   if (!known && id.trim() !== "") unknown++;
-  if (known) { strokes += known.golf; points += known.poker; }
+  if (known) {
+    strokesLo += lo(known.golf); strokesHi += hi(known.golf);
+    pointsLo += lo(known.poker); pointsHi += hi(known.poker);
+    if (known.golf.size > 1) ambiguous++;
+  }
   console.log(
     `  ${String(i + 1).padStart(2)}  ${id}   ${expectedSize}${sizeOk ? " " : "!"}   ` +
-      `${(known ? `${known.name} (${relativeToPar(id, known.golf)})` : "UNKNOWN TO THIS ENGINE").padEnd(26)} ` +
-      `${known ? String(known.golf).padStart(6) : "     ?"}  ${known ? String(known.poker).padStart(6) : "     ?"}`,
+      `${(known ? `${known.name} (${relativeToPar(id, hi(known.golf))})` : "UNKNOWN TO THIS ENGINE").padEnd(26)} ` +
+      `${known ? span(known.golf).padStart(6) : "     ?"}  ${known ? span(known.poker).padStart(6) : "     ?"}`,
   );
 });
 
@@ -114,20 +134,26 @@ console.log();
 if (sizeMismatch) console.log(`${sizeMismatch} hand(s) declare a size that does not match this course's hole layout.`);
 if (unknown) console.log(`${unknown} hand ID(s) this engine cannot produce — the tables differ.`);
 
-console.log(`hands add up to   ${strokes} strokes  /  ${points} points`);
+if (ambiguous) {
+  console.log(`${ambiguous} hand(s) carry an ID that does not pin down a single score (3A is 0 or 1),`);
+  console.log("so the totals below are a range rather than one number.");
+}
+const rng = (a, b) => (a === b ? String(a) : `${a}-${b}`);
+console.log(`hands add up to   ${rng(strokesLo, strokesHi)} strokes  /  ${rng(pointsLo, pointsHi)} points`);
 console.log(`record states     ${f.score}`);
 
 const stated = Number(f.score);
+const inRange = (a, b) => stated >= a && stated <= b;
 if (!Number.isNaN(stated)) {
-  if (stated === strokes) {
+  if (inRange(strokesLo, strokesHi)) {
     console.log("\nMATCH on strokes — this engine and the mainframe agree on the hand table,");
     console.log("and the score field carries GOLF STROKES.");
-  } else if (stated === points) {
+  } else if (inRange(pointsLo, pointsHi)) {
     console.log("\nMATCH on points — the tables agree, and the score field carries");
     console.log("POKERSTR8TS POINTS.");
   } else {
-    console.log(`\nNo match: stated ${stated}, we make it ${strokes} strokes or ${points} points.`);
-    console.log(`Difference from strokes: ${stated - strokes}.`);
+    console.log(`\nNo match: stated ${stated}, we make it ${rng(strokesLo, strokesHi)} strokes or ${rng(pointsLo, pointsHi)} points.`);
+    console.log(`Difference from strokes: ${stated - strokesHi}.`);
     console.log("Either the hand tables differ, or the score is not the sum of the holes.");
   }
 }

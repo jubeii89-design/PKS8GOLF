@@ -27,7 +27,7 @@ never see them in a hundred-player field.
 
 | ID | Strokes | vs par | Points | Frequency | Hand |
 |---|---|---|---|---|---|
-| 3A | 1 | eagle+ | 35 | 48 | Eagle Hole In One |
+| 3A | **0 or 1** | eagle+ | 35 | 48 | Eagle Hole In One — see below |
 | 3B | 2 | birdie | 33 | 52 | Birdie |
 | 3C | 2 | birdie | 18 | 720 | Birdie |
 | 3D | 3 | **par** | 14 | 1,096 | Par |
@@ -55,6 +55,23 @@ never see them in a hundred-player field.
 Letters run best to worst within each hand size. They identify the **hand
 type**, not the score — which is why several letters share a stroke value (two
 different poker hands can both be pars).
+
+### One ID carries two scores
+
+`3A` is the only ID that does not pin down a single value. The four **royal**
+3-card straight flushes — A-Q-K suited — score **0 strokes**; every other
+3-card straight flush scores 1.
+
+Zero is not a legal golf score, so this looks like an off-by-one on the
+ace-high wrap. It is **not** something the TypeScript port introduced: the
+legacy port of `Engine.cs` and the independent pure implementation agree on it,
+so it came from the original game. Whether the AS400 shares the quirk is worth
+asking.
+
+It is rare enough that it did not occur once in 800 played rounds (4 of 22,100
+three-card hands, and only 4 of the 18 holes are par 3). The decoder reports a
+range rather than a single total whenever a `3A` is present, rather than
+pretending to a precision it does not have.
 
 ## The discrepancy
 
@@ -94,6 +111,23 @@ placeholder data, not a real round.
 4. It is 104 characters, not 106 — the prefix is one short (`TOUT`, not
    `TOURT`), the PIN one long (7 digits, not 6), and the top-card block two
    short.
+
+## What has been checked here
+
+Playing 400 rounds in each mode and adding up the holes confirms the decoder's
+premise — that a round score really is the sum of its hands:
+
+- every round filled all 18 hands;
+- the round score equalled the sum of its per-hand scores in **every** round,
+  in both golf and PokerStr8ts;
+- every hand ID that actually came up in play carried a single score.
+
+That proves this engine is internally consistent. It proves nothing about the
+AS400's table — nothing can, short of a real record from the mainframe. What it
+does is establish that the tool below is not itself lying when it says a record
+does or does not reconcile.
+
+Run it with `npm run sum:check`.
 
 ## How to settle it in one step
 

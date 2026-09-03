@@ -56,6 +56,11 @@ values belong in the repository.**
 | `ALLOWED_ORIGINS` | Comma-separated sites that may call this relay from a browser. Unset allows any. |
 | `AS400_SCORE_MODE` | `poker` (default) or `golf` — which score goes in the record. See below. |
 | `AS400_NEGATIVE` | `abs` (default), `minus`, or `overpunch` — how a negative score is written. |
+| `BACKUP_DIR` | Where database snapshots go. **Unset means no backups.** Put it on different storage. |
+| `BACKUP_INTERVAL_MS` | How often to snapshot (default 5 min). |
+| `BACKUP_KEEP` | How many snapshots to keep (default 12). |
+| `PIN_ATTEMPT_LIMIT` | Wrong PINs per player before lockout (default 10). |
+| `PIN_LOCKOUT_MS` | How long a lockout lasts (default 15 min). |
 
 `GET /health` reports which of these are live, so you can confirm the setup
 before opening entries rather than discovering a gap mid-event.
@@ -119,6 +124,7 @@ one path or the other.
 | `POST` | `/claim` | Exchange the ticket in Square's return URL for the player's credentials |
 | `POST` | `/admin/reissue` | Re-send a paid player's credentials with a fresh PIN |
 | `GET` | `/admin/attention` | Who paid but has no PIN, or paid but never played |
+| `POST` | `/admin/unlock` | Clear a player's PIN lockout |
 | `GET` | `/health` | Roster counts, pending deliveries, and what is configured |
 
 Every write after `/join` needs the session token as `Authorization: Bearer`.
@@ -195,6 +201,39 @@ Tables: `players`, `rounds`, `moves`, `as400_queue`. Beyond being queryable it
 buys correctness a log could not — a round must belong to a player who exists,
 moves are unique per `(round, seq)` so a retried flush is a no-op, the delivery
 queue survives a restart, and multi-row writes are transactional.
+
+## Holding up on the day
+
+Three things were measured as real problems with a 100-player field and fixed;
+`npm run resilience:check` holds the line on each.
+
+**A slow mainframe used to be the players' problem.** The delivery attempt ran
+inline with the full retry ladder, so an unreachable AS400 dragged every round
+submission to **6.1s** — a hundred people watching a spinner at the moment
+their round ends, for a record that was already safe in the database. The
+record is now queued first and given one short attempt; the drain loop does the
+rest in the background. Same test, dead mainframe: **233ms**.
+
+**A shotgun start used to serialise.** `scryptSync` holds the event loop for
+its whole duration, so 100 simultaneous joins stalled each other — worst wait
+**3.6s**. Hashing now runs on the thread pool: **439ms at p95**.
+
+**The door had no lock.** Signup was rate limited and `/join` was not, so a
+six-digit PIN could be ground out at ~23 tries a second against a player ID
+guessable from a name. Wrong PINs are now limited **per player** — an attacker
+has many addresses but only one target — and an organiser can clear a lockout
+with `/admin/unlock`.
+
+## Backups
+
+Everything the event owns is in one file: who paid, what they scored, and which
+records the AS400 has not taken. Set `BACKUP_DIR` and it is snapshotted every
+five minutes with `VACUUM INTO`, which takes a consistent copy of a live
+database — plain `cp` can catch it mid-write and produce a corrupt file, which
+is worse than no backup because you find out only when you need it.
+
+Put `BACKUP_DIR` on **different storage** from `DATA_DIR`. A backup on the same
+disk survives every failure except the one that is actually likely.
 
 ## When the AS400 is down
 

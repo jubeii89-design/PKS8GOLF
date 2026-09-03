@@ -40,15 +40,15 @@ const check = (cond, msg) => {
 // --- seed a paid-up field, the way signup would have ---
 const seedDb = new Db(DATA_DIR);
 const seedRoster = new Roster(seedDb);
-function enrol(name, email) {
+async function enrol(name, email) {
   const created = seedRoster.signup({ name, email });
   seedRoster.attachOrder(created.playerId, `ORDER-${created.playerId}`);
   seedRoster.markPaid(`ORDER-${created.playerId}`);
-  const { pin } = seedRoster.issuePin(created.playerId);
+  const { pin } = await seedRoster.issuePin(created.playerId);
   return { playerId: created.playerId, pin, name };
 }
-const gordon = enrol("Gordon Stitt", "gordon@example.com");
-const ada = enrol("Ada Lovelace", "ada@example.com");
+const gordon = await enrol("Gordon Stitt", "gordon@example.com");
+const ada = await enrol("Ada Lovelace", "ada@example.com");
 seedDb.close();
 
 // --- stub AS400: records what it receives, so delivery can be verified ---

@@ -40,14 +40,14 @@ const check = (cond, msg) => {
 // --- a paid-up field ---
 const seedDb = new Db(DATA_DIR);
 const seedRoster = new Roster(seedDb);
-function enrol(name, email) {
+async function enrol(name, email) {
   const c = seedRoster.signup({ name, email });
   seedRoster.attachOrder(c.playerId, `ORDER-${c.playerId}`);
   seedRoster.markPaid(`ORDER-${c.playerId}`);
-  return { playerId: c.playerId, pin: seedRoster.issuePin(c.playerId).pin };
+  return { playerId: c.playerId, pin: (await seedRoster.issuePin(c.playerId)).pin };
 }
-const honest = enrol("Honest Player", "honest@example.com");
-const cheat = enrol("Cheating Player", "cheat@example.com");
+const honest = await enrol("Honest Player", "honest@example.com");
+const cheat = await enrol("Cheating Player", "cheat@example.com");
 seedDb.close();
 
 const received = [];

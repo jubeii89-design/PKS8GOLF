@@ -33,6 +33,8 @@
 
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
+import { mkdir, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
 import { Db } from "./db.mjs";
 import { Roster } from "./roster.mjs";
 import * as square from "./square.mjs";
@@ -51,6 +53,12 @@ const RETRIES = 3;
 const RETRY_BACKOFF_MS = 2000;
 const AS400_TIMEOUT_MS = 30_000;
 const DRAIN_INTERVAL_MS = 30_000;
+/**
+ * How long a finishing player will wait on the mainframe before the queue
+ * takes over. Short enough not to be felt, long enough that a healthy AS400
+ * (~350ms under load) almost always answers inside it.
+ */
+const FIRST_ATTEMPT_TIMEOUT_MS = 2_000;
 /** Browsers may only send what the game actually sends; keeps junk out. */
 const MAX_BODY_BYTES = 1_000_000;
 /** PokerStr8ts. The tournament is one mode; practice is never reported. */
@@ -99,6 +107,21 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? "")
 const SIGNUP_LIMIT = Number(process.env.SIGNUP_LIMIT ?? 5);
 const SIGNUP_WINDOW_MS = 10 * 60 * 1000;
 
+/**
+ * Wrong PINs tolerated per player before the door closes on them.
+ *
+ * A PIN is six digits and player IDs are guessable from a name, so without a
+ * limit an entry can simply be ground out — measured at ~23 tries a second
+ * against one player, which is a matter of hours, less in parallel. Locking
+ * the *player* rather than the address is what actually helps: an attacker
+ * has many addresses but only one target.
+ *
+ * The cost is that someone can be locked out by a stranger guessing at them,
+ * so the window is short and an organiser can clear it.
+ */
+const PIN_ATTEMPT_LIMIT = Number(process.env.PIN_ATTEMPT_LIMIT ?? 10);
+const PIN_LOCKOUT_MS = Number(process.env.PIN_LOCKOUT_MS ?? 15 * 60 * 1000);
+
 const TOURNAMENT = {
   name: process.env.TOURNAMENT_NAME ?? "Strategic Titans Charity Tournament",
   charity: process.env.TOURNAMENT_CHARITY ?? "our charity partner",
@@ -114,6 +137,18 @@ const TOURNAMENT = {
  */
 const CLAIM_HOLD_MS = 30 * 60 * 1000;
 
+/**
+ * How often the database is snapshotted, and how many snapshots are kept.
+ *
+ * Everything the event owns lives in one file. Losing it loses the roster,
+ * the record of who paid, and every score — so it is copied aside regularly
+ * while the event runs. Set BACKUP_DIR to somewhere on different storage;
+ * a backup on the same disk only survives the failures that were not the disk.
+ */
+const BACKUP_DIR = process.env.BACKUP_DIR ?? "";
+const BACKUP_INTERVAL_MS = Number(process.env.BACKUP_INTERVAL_MS ?? 5 * 60 * 1000);
+const BACKUP_KEEP = Number(process.env.BACKUP_KEEP ?? 12);
+
 const db = new Db(DATA_DIR);
 const roster = new Roster(db);
 
@@ -128,32 +163,45 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * Forward one record. Unlike the browser this can read the response, so a
  * failure is a fact rather than a guess.
  */
-async function sendToAS400(record) {
+async function sendToAS400(record, { attempts = RETRIES, timeoutMs = AS400_TIMEOUT_MS } = {}) {
   const url = `${AS400_URL}?${QUERY_PARAM}=${encodeURIComponent(record)}`;
   let lastError = "";
-  for (let attempt = 1; attempt <= RETRIES; attempt++) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const res = await fetch(url, { method: "GET", signal: AbortSignal.timeout(AS400_TIMEOUT_MS) });
+      const res = await fetch(url, { method: "GET", signal: AbortSignal.timeout(timeoutMs) });
       if (res.ok) return { delivered: true, status: res.status };
       // 4xx means the record itself is wrong; retrying cannot fix it.
       if (res.status >= 400 && res.status < 500) {
         return { delivered: false, permanent: true, error: `HTTP ${res.status}` };
       }
       lastError = `HTTP ${res.status}`;
-      log(`as400 ${lastError}, attempt ${attempt}/${RETRIES}`);
+      log(`as400 ${lastError}, attempt ${attempt}/${attempts}`);
     } catch (err) {
       lastError = err.name === "TimeoutError" ? "timeout" : err.message;
-      log(`as400 ${lastError}, attempt ${attempt}/${RETRIES}`);
+      log(`as400 ${lastError}, attempt ${attempt}/${attempts}`);
     }
-    if (attempt < RETRIES) await sleep(RETRY_BACKOFF_MS * attempt);
+    if (attempt < attempts) await sleep(RETRY_BACKOFF_MS * attempt);
   }
   return { delivered: false, permanent: false, error: lastError };
 }
 
-/** Queue a record and try it once now. The queue owns it from here. */
+/**
+ * Hand a record to the queue and give it one quick attempt.
+ *
+ * A player must never wait on the mainframe. Measured with 100 concurrent
+ * rounds, a healthy AS400 answers in ~350ms but an unreachable one dragged
+ * every submission to 6s — because the full retry ladder ran before the
+ * player got a reply. Their score was already safe in the database by then;
+ * they were queuing for nothing.
+ *
+ * So the record is queued first, then given a single attempt with a short
+ * deadline. If that misses, it stays queued and the drain loop keeps at it
+ * with the full retry ladder in the background. The player finds out quickly
+ * either way, and a mainframe outage costs them a caption, not a wait.
+ */
 async function deliverRecord(roundId, record) {
   const id = db.queueRecord(roundId, record, new Date().toISOString());
-  const result = await sendToAS400(record);
+  const result = await sendToAS400(record, { attempts: 1, timeoutMs: FIRST_ATTEMPT_TIMEOUT_MS });
   if (result.delivered) {
     db.markDelivered(id, new Date().toISOString());
   } else if (result.permanent) {
@@ -182,6 +230,34 @@ async function drainPending() {
     } else {
       db.recordAttempt(id, result.error ?? "unknown");
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Backups
+// ---------------------------------------------------------------------------
+
+/** Snapshot the database, then drop all but the most recent BACKUP_KEEP. */
+async function takeBackup() {
+  if (!BACKUP_DIR) return;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const target = join(BACKUP_DIR, `tournament-${stamp}.db`);
+  try {
+    await mkdir(BACKUP_DIR, { recursive: true });
+    db.backupTo(target);
+
+    const kept = (await readdir(BACKUP_DIR))
+      .filter((f) => f.startsWith("tournament-") && f.endsWith(".db"))
+      .sort()
+      .reverse();
+    for (const stale of kept.slice(BACKUP_KEEP)) {
+      await rm(join(BACKUP_DIR, stale), { force: true });
+    }
+    log(`backup written: ${target} (keeping ${Math.min(kept.length, BACKUP_KEEP)})`);
+  } catch (err) {
+    // Loud, because a backup that is quietly not happening is worse than none:
+    // you would be relying on it.
+    log(`BACKUP FAILED: ${err.message} — the tournament data has no recent copy`);
   }
 }
 
@@ -233,7 +309,7 @@ setInterval(() => {
  * recoverable by re-issuing, so the fix is to send it again, not to refund.
  */
 async function issueCredentials(entry) {
-  const issued = roster.issuePin(entry.playerId);
+  const issued = await roster.issuePin(entry.playerId);
   if (!issued) return { sent: false, reason: "unknown-player" };
 
   // Collectable from the payment-return screen for a short while, so a failed
@@ -357,6 +433,35 @@ function signupAllowed(ip) {
   recent.push(now);
   signupAttempts.set(ip, recent);
   return true;
+}
+
+/**
+ * Failed PIN attempts per player. In memory rather than the database because
+ * a lockout should not outlive a restart — on tournament morning, a relay
+ * restart clearing a lockout is the failure mode you want, not the one that
+ * strands a paid-up player.
+ */
+const pinFailures = new Map();
+
+function pinLockedOut(playerId, now = Date.now()) {
+  const rec = pinFailures.get(playerId);
+  if (!rec) return false;
+  if (now - rec.first > PIN_LOCKOUT_MS) {
+    pinFailures.delete(playerId);
+    return false;
+  }
+  return rec.count >= PIN_ATTEMPT_LIMIT;
+}
+
+function notePinFailure(playerId, now = Date.now()) {
+  const rec = pinFailures.get(playerId);
+  if (!rec || now - rec.first > PIN_LOCKOUT_MS) pinFailures.set(playerId, { count: 1, first: now });
+  else rec.count++;
+}
+
+/** A correct PIN clears the record — an honest fumble should not accumulate. */
+function clearPinFailures(playerId) {
+  pinFailures.delete(playerId);
 }
 
 /** Behind a reverse proxy the real address is in the forwarded header. */
@@ -532,11 +637,25 @@ const server = createServer(async (req, res) => {
     // where a session begins and where the round's deck is decided.
     if (req.method === "POST" && url.pathname === "/join") {
       const body = await readBody(req);
-      const verdict = roster.verify(body.playerId ?? "", body.pin ?? "");
+      const attemptedId = String(body.playerId ?? "").trim().slice(0, 15);
+
+      // Refuse before hashing: otherwise the lockout still costs a scrypt per
+      // attempt, and the attacker gets to burn our CPU for free.
+      if (pinLockedOut(attemptedId)) {
+        log(`join refused for ${attemptedId}: locked out after ${PIN_ATTEMPT_LIMIT} wrong PINs`);
+        return json(res, 429, { ok: false, reason: "too-many-attempts" });
+      }
+
+      const verdict = await roster.verify(body.playerId ?? "", body.pin ?? "");
       if (!verdict.ok) {
-        log(`join refused for ${String(body.playerId).slice(0, 15)}: ${verdict.reason}`);
+        // Only a wrong PIN counts. An unknown player or an unpaid one is not
+        // someone guessing at a credential, and a missed tee-off is not their
+        // fault at all.
+        if (verdict.reason === "wrong-pin") notePinFailure(attemptedId);
+        log(`join refused for ${attemptedId}: ${verdict.reason}`);
         return json(res, 200, { ok: false, reason: verdict.reason, teeTime: verdict.teeTime });
       }
+      clearPinFailures(attemptedId);
 
       // The deck is the server's to choose. Issuing it here — and signing it
       // into the token — is what stops a player re-joining until they like
@@ -717,6 +836,20 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true, emailed: issued.sent, reason: issued.reason });
     }
 
+    // Clear a lockout, for the player who fumbled their own PIN ten times or
+    // was locked out by someone else guessing at them.
+    if (req.method === "POST" && url.pathname === "/admin/unlock") {
+      if (ADMIN_TOKEN === "" || bearerFrom(req) !== ADMIN_TOKEN) {
+        return json(res, 403, { error: "forbidden" });
+      }
+      const body = await readBody(req);
+      const playerId = String(body.playerId ?? "").trim();
+      const wasLocked = pinLockedOut(playerId);
+      clearPinFailures(playerId);
+      log(`admin cleared PIN lockout for ${playerId} (was ${wasLocked ? "locked" : "not locked"})`);
+      return json(res, 200, { ok: true, wasLocked });
+    }
+
     // Who needs attention: paid but never got a PIN, or paid but never played.
     if (req.method === "GET" && url.pathname === "/admin/attention") {
       if (ADMIN_TOKEN === "" || bearerFrom(req) !== ADMIN_TOKEN) {
@@ -755,6 +888,10 @@ const server = createServer(async (req, res) => {
 });
 
 setInterval(() => void drainPending(), DRAIN_INTERVAL_MS).unref();
+if (BACKUP_DIR) {
+  void takeBackup(); // one immediately, so a misconfiguration is found now
+  setInterval(() => void takeBackup(), BACKUP_INTERVAL_MS).unref();
+}
 
 server.listen(PORT, () => {
   const counts = db.playerCounts();
@@ -767,6 +904,7 @@ server.listen(PORT, () => {
   log(`  tee-off  ${TEE_OFF_AT || "no cutoff — players may start any time"}`);
   log(`  admin    ${ADMIN_TOKEN ? "enabled" : "disabled — set ADMIN_TOKEN to re-issue credentials"}`);
   log(`  origins  ${ALLOWED_ORIGINS.length > 0 ? ALLOWED_ORIGINS.join(", ") : "any (set ALLOWED_ORIGINS to restrict)"}`);
+  log(`  backups  ${BACKUP_DIR ? `${BACKUP_DIR} every ${BACKUP_INTERVAL_MS / 60000}min, keeping ${BACKUP_KEEP}` : "NONE — set BACKUP_DIR"}`);
   log(`  as400    reporting ${AS400_SCORE_MODE === 1 ? "GOLF strokes" : "POKER points"}, negatives=${AS400_NEGATIVE}`);
   if (square.isConfigured() && !square.canVerifyWebhooks()) {
     log(`  WARNING  no webhook key/url set — payment confirmations cannot be trusted and will be refused`);

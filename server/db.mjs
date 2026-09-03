@@ -99,6 +99,26 @@ export class Db {
     this.#db.close();
   }
 
+  /**
+   * Snapshot the database to a file, safely, while it is being written to.
+   *
+   * Copying a live SQLite file with `cp` can catch it mid-write and produce a
+   * corrupt copy — which is worse than no backup, because you will not find
+   * out until you need it. SQLite's own VACUUM INTO takes a consistent
+   * snapshot instead, and it works fine under WAL with readers and writers
+   * active.
+   *
+   * Everything the event owns is in here: who paid, what they scored, and
+   * which records the AS400 still has not taken. One file lost is the whole
+   * tournament.
+   */
+  backupTo(path) {
+    // A leftover file from an interrupted run would make this fail; the caller
+    // names a fresh path per snapshot, so a collision means something is wrong.
+    this.#db.exec(`VACUUM INTO '${path.replace(/'/g, "''")}'`);
+    return path;
+  }
+
   /** Escape hatch for one-off queries and the admin views. */
   get raw() {
     return this.#db;

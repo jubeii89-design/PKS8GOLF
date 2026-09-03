@@ -77,7 +77,7 @@ check(typeof s1.playerId === "string", "a player signs up");
 const db = new Db(DATA_DIR);
 const roster = new Roster(db);
 roster.markPaid(`ORDER-1`);
-const { pin } = roster.issuePin(s1.playerId);
+const { pin } = await roster.issuePin(s1.playerId);
 check(db.playerById(s1.playerId).tee_time === TEE_OFF_AT, "the tee-off deadline is stored against the player");
 
 const lateJoin = await (await post("/join", { playerId: s1.playerId, pin })).json();

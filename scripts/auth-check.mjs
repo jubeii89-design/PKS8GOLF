@@ -36,7 +36,7 @@ const seedRoster = new Roster(seedDb);
 const created = seedRoster.signup({ name: "Real Player", email: "real@example.com" });
 seedRoster.attachOrder(created.playerId, "ORDER-1");
 seedRoster.markPaid("ORDER-1");
-const { pin } = seedRoster.issuePin(created.playerId);
+const { pin } = await seedRoster.issuePin(created.playerId);
 seedDb.close();
 
 // Tokens signed with a secret the relay does NOT share are the realistic

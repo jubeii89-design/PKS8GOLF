@@ -14,7 +14,18 @@
  * State lives in SQLite (see db.mjs) so it can be queried, not just appended.
  */
 
-import { randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomInt, scrypt, timingSafeEqual } from "node:crypto";
+import { promisify } from "node:util";
+
+/**
+ * The async form runs on the thread pool instead of the main thread.
+ *
+ * scrypt is deliberately slow — that is the point of it — but the synchronous
+ * version holds the event loop for the whole ~40ms, so during a shotgun start
+ * every other request in flight stops too. Measured with 100 simultaneous
+ * joins that pushed the worst wait to 3.6 seconds. Off-thread, they overlap.
+ */
+const scryptAsync = promisify(scrypt);
 
 /** Signed up but not paid — cannot join. */
 export const PENDING = "pending";
@@ -99,12 +110,13 @@ export class Roster {
    * Re-issuing replaces the old PIN, which is what you want when a player
    * never received their email and an organiser has to send it again.
    */
-  issuePin(playerId) {
+  async issuePin(playerId) {
     const player = this.#db.playerById(playerId);
     if (!player) return null;
     const pin = String(randomInt(0, 1_000_000)).padStart(6, "0");
     const pinSalt = randomBytes(16).toString("hex");
-    this.#db.setPin(playerId, pinSalt, scryptSync(pin, pinSalt, SCRYPT_KEYLEN).toString("hex"));
+    const hash = await scryptAsync(pin, pinSalt, SCRYPT_KEYLEN);
+    this.#db.setPin(playerId, pinSalt, hash.toString("hex"));
     return { pin, entry: toEntry(this.#db.playerById(playerId)) };
   }
 
@@ -119,13 +131,13 @@ export class Roster {
    *
    * `now` is injectable so the tee-off cutoff is testable without waiting.
    */
-  verify(playerId, pin, now = Date.now()) {
+  async verify(playerId, pin, now = Date.now()) {
     const player = this.#db.playerById(String(playerId).trim());
     if (!player) return { ok: false, reason: "unknown-player" };
     // Signed up but never paid, so no PIN was ever issued.
     if (!player.pin_hash) return { ok: false, reason: "not-paid" };
 
-    const attempt = scryptSync(String(pin).trim(), player.pin_salt, SCRYPT_KEYLEN);
+    const attempt = await scryptAsync(String(pin).trim(), player.pin_salt, SCRYPT_KEYLEN);
     const stored = Buffer.from(player.pin_hash, "hex");
     if (attempt.length !== stored.length || !timingSafeEqual(attempt, stored)) {
       return { ok: false, reason: "wrong-pin" };

@@ -21,7 +21,8 @@
     "checks": "npm run auth:check && npm run relay:check && npm run signup:check && npm run verify:check && npm run ops:check && npm run claim:check && npm run score:check",
     "ops:check": "npm run build:server && node scripts/ops-check.mjs",
     "claim:check": "npm run build:server && node scripts/claim-check.mjs",
-    "score:check": "npm run build:server && node scripts/score-encoding-check.mjs"
+    "score:check": "npm run build:server && node scripts/score-encoding-check.mjs",
+    "decode": "npm run build:server && node scripts/decode-record.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.61.1",

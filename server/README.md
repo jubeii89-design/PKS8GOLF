@@ -164,8 +164,13 @@ points either way.
 
 Worth checking alongside it: the supplied spec says hand ID `3E` is *"a bad
 3-card hand, double bogey 5"*, but this engine scores `3E` as **Par, 3
-strokes**, and has no 3-card hand worth 5. If the ID tables differ, the
-36-character hand block is wrong too, not just the score.
+strokes**, and has no 3-card hand worth 5 at all. See
+[HAND-IDS.md](HAND-IDS.md) for the full table, what a mismatch would cost
+(~3 strokes a round), and why the supplied sample record cannot settle it.
+
+`npm run decode -- "<a real record>"` reads a record against this engine's
+table and checks whether its hands add up to its own score — which answers
+both the table question and the strokes-or-points question in one step.
 
 **How a negative is written**, if points are what it wants. The field is three
 characters with no room for a sign:

@@ -55,6 +55,18 @@ const DRAIN_INTERVAL_MS = 30_000;
 const MAX_BODY_BYTES = 1_000_000;
 /** PokerStr8ts. The tournament is one mode; practice is never reported. */
 const TOURNAMENT_MODE = 0;
+/**
+ * Which mode's score goes in the AS400 record.
+ *
+ * "poker" sends the points the leaderboard shows. "golf" scores the same
+ * finished board as strokes instead — which is what the supplied sample and
+ * its bogey language suggest the field actually wants, since golf strokes run
+ * 88-103 and are never negative while points go negative in a third of rounds.
+ * Unconfirmed, so the default preserves existing behaviour.
+ */
+const AS400_SCORE_MODE = (process.env.AS400_SCORE_MODE ?? "poker").toLowerCase() === "golf" ? 1 : 0;
+/** How a negative score is written; see NegativeConvention in as400Record.ts. */
+const AS400_NEGATIVE = process.env.AS400_NEGATIVE ?? "abs";
 
 // --- the event itself. All of this belongs in config, not in the code. ---
 const ENTRY_FEE_CENTS = Number(process.env.ENTRY_FEE_CENTS ?? 2500);
@@ -629,6 +641,8 @@ const server = createServer(async (req, res) => {
         playerId: session.playerId,
         pin: session.pin ?? "",
         claimedScore,
+        reportMode: AS400_SCORE_MODE,
+        negatives: AS400_NEGATIVE,
       });
 
       if (!derived.ok) {
@@ -643,6 +657,16 @@ const server = createServer(async (req, res) => {
         log(
           `round ${session.playerId} SCORE MISMATCH: client claimed ${claimedScore}, ` +
             `replay says ${derived.round} — the replay stands`,
+        );
+      }
+      // A negative score written as its magnitude reaches the mainframe as a
+      // positive one. Say so per player rather than letting it pass quietly —
+      // the database keeps the true score, so it can be reconciled.
+      if (derived.reportedScore < 0 && AS400_NEGATIVE === "abs") {
+        log(
+          `round ${session.playerId} NEGATIVE SCORE ${derived.reportedScore} SENT AS ` +
+            `"${String(Math.abs(derived.reportedScore)).padStart(3, "0")}" — the AS400 will read it as ` +
+            `positive. Set AS400_NEGATIVE once the convention is known.`,
         );
       }
       if (derived.cardMismatches > 0) {
@@ -743,6 +767,7 @@ server.listen(PORT, () => {
   log(`  tee-off  ${TEE_OFF_AT || "no cutoff — players may start any time"}`);
   log(`  admin    ${ADMIN_TOKEN ? "enabled" : "disabled — set ADMIN_TOKEN to re-issue credentials"}`);
   log(`  origins  ${ALLOWED_ORIGINS.length > 0 ? ALLOWED_ORIGINS.join(", ") : "any (set ALLOWED_ORIGINS to restrict)"}`);
+  log(`  as400    reporting ${AS400_SCORE_MODE === 1 ? "GOLF strokes" : "POKER points"}, negatives=${AS400_NEGATIVE}`);
   if (square.isConfigured() && !square.canVerifyWebhooks()) {
     log(`  WARNING  no webhook key/url set — payment confirmations cannot be trusted and will be refused`);
   }

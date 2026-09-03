@@ -66,7 +66,7 @@ export function replayRound({ seed, mode, moves, claimedScore = null }) {
       if (move.action === "pass") {
         game.pass();
       } else {
-        if (move.grid === null || move.col === null || move.row === null) {
+        if (move.grid == null || move.col == null || move.row == null) {
           return { ok: false, reason: "place-without-cell", atSeq: move.seq };
         }
         game.place({ grid: move.grid, col: move.col, row: move.row });
@@ -83,6 +83,7 @@ export function replayRound({ seed, mode, moves, claimedScore = null }) {
   return {
     ok: true,
     score,
+    board: game.board,
     round: score.round,
     handCompletions: game.handCompletions,
     movesApplied: applied,
@@ -100,15 +101,23 @@ export function replayRound({ seed, mode, moves, claimedScore = null }) {
  * The record is assembled here, from the derived score, so what the mainframe
  * is told and what the leaderboard shows cannot disagree.
  */
-export function deriveRound({ seed, mode, moves, playerId, pin, claimedScore = null, now = new Date() }) {
+export function deriveRound({
+  seed, mode, moves, playerId, pin, claimedScore = null, now = new Date(),
+  reportMode = mode, negatives = "abs",
+}) {
   const replay = replayRound({ seed, mode, moves, claimedScore });
   if (!replay.ok) return replay;
 
+  // The same finished board can be scored either way — points for the
+  // leaderboard, strokes for the mainframe — so it is replayed once and
+  // scored twice rather than played twice.
+  const reported = reportMode === mode ? replay.score : scoreBoard(replay.board, reportMode);
+
   const record = buildRecord(
-    { playerId, pin, score: replay.score, handCompletions: replay.handCompletions },
+    { playerId, pin, score: reported, handCompletions: replay.handCompletions, negatives },
     now,
   );
-  return { ...replay, record };
+  return { ...replay, record, reportedScore: reported.round, reportMode };
 }
 
 export { PREPLACED };

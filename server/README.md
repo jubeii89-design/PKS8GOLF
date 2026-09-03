@@ -54,6 +54,8 @@ values belong in the repository.**
 | `ADMIN_TOKEN` | Guards `/admin/*`. Unset leaves those endpoints closed. |
 | `SIGNUP_LIMIT` | Signups allowed per address per 10 minutes (default 5). |
 | `ALLOWED_ORIGINS` | Comma-separated sites that may call this relay from a browser. Unset allows any. |
+| `AS400_SCORE_MODE` | `poker` (default) or `golf` — which score goes in the record. See below. |
+| `AS400_NEGATIVE` | `abs` (default), `minus`, or `overpunch` — how a negative score is written. |
 
 `GET /health` reports which of these are live, so you can confirm the setup
 before opening entries rather than discovering a gap mid-event.
@@ -145,6 +147,39 @@ guessed at.
 The AS400 record is built server-side from the derived score, so what the
 mainframe is told and what the leaderboard shows cannot disagree.
 
+## The score field — two things still unconfirmed
+
+**Which mode's score belongs there.** Measured over 400 rounds:
+
+| Mode | Range | Negative rounds |
+|---|---|---|
+| Golf (strokes) | 88 – 103 | **0%** |
+| PokerStr8ts (points) | −62 – 109 | **34%** |
+
+The supplied sample read `097`, which sits mid-range for golf, and the field
+description talks in bogeys. That points at strokes. Set
+`AS400_SCORE_MODE=golf` to send them — the relay replays the round once and
+scores the same finished board both ways, so the leaderboard keeps showing
+points either way.
+
+Worth checking alongside it: the supplied spec says hand ID `3E` is *"a bad
+3-card hand, double bogey 5"*, but this engine scores `3E` as **Par, 3
+strokes**, and has no 3-card hand worth 5. If the ID tables differ, the
+36-character hand block is wrong too, not just the score.
+
+**How a negative is written**, if points are what it wants. The field is three
+characters with no room for a sign:
+
+| `AS400_NEGATIVE` | −18 becomes | Note |
+|---|---|---|
+| `abs` (default) | `018` | **Wrong** — read as +18. Logged loudly per player. |
+| `minus` | `-18` | Only fits to −99 |
+| `overpunch` | `01Q` | Zoned decimal, the usual AS/400 convention |
+
+Until this is settled the relay logs `NEGATIVE SCORE ... SENT AS` naming the
+player and the true score, and the database keeps the real figure, so anything
+misreported can be reconciled afterwards.
+
 ## Storage
 
 SQLite (`tournament.db`), via `node:sqlite` — built into Node 22, so there is
@@ -178,6 +213,7 @@ npm run signup:check   # signup, payment, webhook forgery, email, join
 npm run verify:check   # a cheat and an honest player score identically
 npm run ops:check      # tee-off lockout, credential re-issue, rate limiting
 npm run claim:check    # collecting credentials after payment, and the race
+npm run score:check    # what reaches the AS400 for a round that finished under
 ```
 
 Spins up a stub AS400 and exercises the whole thing: move batches persist,

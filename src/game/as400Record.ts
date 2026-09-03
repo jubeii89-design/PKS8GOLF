@@ -22,11 +22,15 @@
  * - score: 3 digits, zero-padded.
  * - top cards: the 2 highest-ranked cards per hole, one rank character each.
  *
- * UNRESOLVED — the score field is 3 characters with no room for a sign, and no
- * convention was given for a negative round (which PokerStr8ts can produce).
- * `-18` currently goes out as "018", which the mainframe will read as +18. See
- * `encodeScore` below; when the real convention is known, that one function is
- * the only thing that changes.
+ * UNRESOLVED, and both are configuration rather than guesses:
+ *
+ * - Which mode's score belongs here. Measured over 400 rounds, Golf scores
+ *   88-103 and is never negative, while PokerStr8ts ranges -62 to +109 and is
+ *   negative in a third of rounds. The supplied sample read "097", which sits
+ *   mid-range for Golf, and the field description talks in bogeys — so this
+ *   field may well want strokes, not points. Set AS400_SCORE_MODE on the relay.
+ * - How to write a negative, if points are what it wants. See
+ *   `NegativeConvention` and AS400_NEGATIVE.
  */
 
 import { type BoardScore, rankOf } from "../engine/index.js";
@@ -45,6 +49,8 @@ export interface RoundRecord {
   pin: string;
   score: BoardScore;
   handCompletions: readonly HandCompletion[];
+  /** How to write a negative round; see NegativeConvention. */
+  negatives?: NegativeConvention;
 }
 
 /** A=1, T=10, J=11, Q=12, K=13 — one character per card rank, suit ignored. */
@@ -81,15 +87,48 @@ function quarterHourOfDay(d: Date): number {
 }
 
 /**
+ * How a negative round is written into a field with no room for a sign.
+ *
+ * Which of these the AS400 wants is not yet confirmed, so it is configuration
+ * rather than a guess baked into the code.
+ *
+ * - "abs"       magnitude only. WRONG for a negative round — the mainframe
+ *               reads -18 as +18 — but it is what the field did before this
+ *               was configurable, so it stays the default until someone says
+ *               otherwise. The relay logs loudly every time it is used on a
+ *               negative score.
+ * - "minus"     a leading minus, e.g. "-18". Only fits down to -99.
+ * - "overpunch" zoned decimal, the usual AS/400 signed-numeric convention:
+ *               the sign rides on the last digit, so -18 becomes "01Q".
+ */
+export type NegativeConvention = "abs" | "minus" | "overpunch";
+
+/** Zoned-decimal negatives: the final digit carries the sign. */
+const OVERPUNCH_NEGATIVE = "}JKLMNOPQR";
+
+/**
  * The score, as three characters.
  *
- * The sign is the open question. Until the AS400's convention is confirmed a
- * negative round sends its magnitude, which is wrong for any player who
- * finishes under — it is isolated here so the fix is one function, applied
- * everywhere at once, rather than a hunt through the codebase.
+ * Isolated here because both the browser and the server build records, and a
+ * disagreement between them would put one number on the leaderboard and a
+ * different one on the mainframe.
  */
-export function encodeScore(round: number): string {
-  return String(Math.abs(round)).padStart(3, "0").slice(-3);
+export function encodeScore(round: number, convention: NegativeConvention = "abs"): string {
+  const magnitude = String(Math.abs(round)).padStart(3, "0").slice(-3);
+  if (round >= 0) return magnitude;
+
+  switch (convention) {
+    case "minus":
+      // "-18". A score of -100 or worse cannot be written this way; send the
+      // magnitude rather than a truncated number that means something else.
+      return Math.abs(round) <= 99 ? `-${String(Math.abs(round)).padStart(2, "0")}` : magnitude;
+    case "overpunch": {
+      const last = Number(magnitude[magnitude.length - 1]);
+      return magnitude.slice(0, 2) + OVERPUNCH_NEGATIVE[last];
+    }
+    default:
+      return magnitude; // "abs" — known wrong, logged by the caller
+  }
 }
 
 /**
@@ -114,6 +153,8 @@ export function buildRecord(r: RoundRecord, now: Date = new Date()): string {
     return completion.topCards.map(rankChar).join("").padEnd(2, " ").slice(0, 2);
   }).join("");
 
-  const record = TOUR_PREFIX + day + qtrHour + playerId + pin + handIds + encodeScore(r.score.round) + topCards;
+  const record =
+    TOUR_PREFIX + day + qtrHour + playerId + pin + handIds +
+    encodeScore(r.score.round, r.negatives ?? "abs") + topCards;
   return fixed(record, RECORD_LENGTH);
 }

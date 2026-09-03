@@ -6,6 +6,7 @@
 
 import { GameMode } from "../engine/index.js";
 import { crest } from "./crest.js";
+import { SIGNUP_URL } from "../game/relay.js";
 
 export function renderIntro(
   onStart: (mode: GameMode) => void,
@@ -60,7 +61,7 @@ export function renderIntro(
   if (onTournament) {
     const signup = document.createElement("a");
     signup.className = "signup-link";
-    signup.href = "../signup/";
+    signup.href = SIGNUP_URL;
     signup.textContent = "Not entered yet? Sign up for the tournament";
     screen.appendChild(signup);
   }

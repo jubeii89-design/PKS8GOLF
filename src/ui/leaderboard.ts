@@ -6,6 +6,7 @@
 
 import type { LeaderboardRow } from "../game/tournamentService.js";
 import { isValidPlayerId, isValidPin } from "../game/as400.js";
+import { SIGNUP_URL } from "../game/relay.js";
 import { leaderboardSignSVG } from "./leaderboardSign.js";
 
 const medal = (rank: number) => (rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : String(rank));
@@ -309,7 +310,7 @@ export function promptForPlayerCredentials(): Promise<PlayerCredentials | null> 
     // The player who has not signed up yet ends up here; give them the way out.
     const help = document.createElement("a");
     help.className = "signup-link";
-    help.href = "../signup/";
+    help.href = SIGNUP_URL;
     help.textContent = "Don't have a Player ID? Sign up";
 
     panel.append(h, p, idInput, pinInput, row, help);

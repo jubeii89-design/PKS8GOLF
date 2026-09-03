@@ -14,6 +14,20 @@ const configured = import.meta.env.VITE_RELAY_URL;
 export const RELAY_URL: string | null =
   typeof configured === "string" && configured.trim() !== "" ? configured.replace(/\/$/, "") : null;
 
+/**
+ * Where a player without credentials is sent to enter.
+ *
+ * Defaults to the signup page bundled with this repo, but the tournament's
+ * real signup page may live anywhere — on the main site, for instance — so
+ * this is set at build time with VITE_SIGNUP_URL and the game just links to
+ * whatever it is told.
+ */
+const signupConfigured = import.meta.env.VITE_SIGNUP_URL;
+export const SIGNUP_URL: string =
+  typeof signupConfigured === "string" && signupConfigured.trim() !== ""
+    ? signupConfigured.trim()
+    : "../signup/";
+
 /** True when a relay is configured; decides which reporting path is used. */
 export function hasRelay(): boolean {
   return RELAY_URL !== null;

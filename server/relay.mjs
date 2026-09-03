@@ -69,6 +69,20 @@ const PLAY_URL = process.env.PLAY_URL ?? "https://www.strategictitans.ca/play/";
 const TEE_OFF_AT = process.env.TEE_OFF_AT ?? "";
 /** Guards the credential re-issue endpoint. Unset leaves it closed. */
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN ?? "";
+/**
+ * Which sites may call this relay from a browser.
+ *
+ * Comma-separated origins, e.g. "https://www.strategictitans.ca". Left unset
+ * it allows any origin, which is the right default while the signup page and
+ * the game are still moving around — but once their homes are fixed, naming
+ * them means a stranger's page cannot drive signups and create real Square
+ * orders on your account.
+ */
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 /** Each signup creates a real Square order, so the endpoint is worth limiting. */
 const SIGNUP_LIMIT = Number(process.env.SIGNUP_LIMIT ?? 5);
 const SIGNUP_WINDOW_MS = 10 * 60 * 1000;
@@ -258,15 +272,24 @@ function leaderboard(playerId) {
 // ---------------------------------------------------------------------------
 
 /** The game is served from another origin, so preflight has to be answered. */
-function cors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+function cors(res, req) {
+  const origin = req?.headers?.origin;
+  // With an allowlist, echo the caller's origin only when it is on it —
+  // answering "*" would defeat the point of having one.
+  if (ALLOWED_ORIGINS.length > 0) {
+    if (origin && ALLOWED_ORIGINS.includes(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+    }
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.setHeader("Access-Control-Max-Age", "86400");
 }
 
 function json(res, status, body) {
-  cors(res);
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
 }
@@ -356,9 +379,11 @@ function requireSession(req, res) {
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  // Applied to every response, including errors — a reply the browser refuses
+  // to read is the same as no reply at all.
+  cors(res, req);
 
   if (req.method === "OPTIONS") {
-    cors(res);
     res.writeHead(204);
     res.end();
     return;
@@ -717,6 +742,7 @@ server.listen(PORT, () => {
   log(`  email    ${email.isConfigured() ? "smtp" : "NOT CONFIGURED — credentials will not be sent"}`);
   log(`  tee-off  ${TEE_OFF_AT || "no cutoff — players may start any time"}`);
   log(`  admin    ${ADMIN_TOKEN ? "enabled" : "disabled — set ADMIN_TOKEN to re-issue credentials"}`);
+  log(`  origins  ${ALLOWED_ORIGINS.length > 0 ? ALLOWED_ORIGINS.join(", ") : "any (set ALLOWED_ORIGINS to restrict)"}`);
   if (square.isConfigured() && !square.canVerifyWebhooks()) {
     log(`  WARNING  no webhook key/url set — payment confirmations cannot be trusted and will be refused`);
   }

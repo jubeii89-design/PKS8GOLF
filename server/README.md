@@ -53,9 +53,16 @@ values belong in the repository.**
 | `TEE_OFF_AT` | ISO timestamp after which nobody new may start. Unset means no cutoff. |
 | `ADMIN_TOKEN` | Guards `/admin/*`. Unset leaves those endpoints closed. |
 | `SIGNUP_LIMIT` | Signups allowed per address per 10 minutes (default 5). |
+| `ALLOWED_ORIGINS` | Comma-separated sites that may call this relay from a browser. Unset allows any. |
 
 `GET /health` reports which of these are live, so you can confirm the setup
 before opening entries rather than discovering a gap mid-event.
+
+## Building your own signup page
+
+The signup page can live anywhere — see [SIGNUP-API.md](SIGNUP-API.md). It is
+two endpoints and a redirect, and it never touches card details. Point the
+game's "Not entered yet?" links at it with `VITE_SIGNUP_URL` when building.
 
 ## How a player gets in
 

@@ -48,7 +48,7 @@ function renderPortal(): HTMLElement {
   features.className = "portal-features";
   features.innerHTML = `
     <li>Two ways to play — PokerStr8ts or Golf strokes</li>
-    <li>1–8 greedy AI opponents, right in your browser</li>
+    <li>Fast solo rounds, right in your browser</li>
     <li>Persistent leaderboard, no account needed</li>`;
 
   copy.append(presents, crest(), wordmark, tagline, features);

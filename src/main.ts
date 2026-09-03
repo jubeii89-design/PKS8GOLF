@@ -1,19 +1,18 @@
 /**
- * App entry: intro → match → end panel. Framework-free; re-renders the game
- * screen from the human player's GameState after each action, with AI
- * opponents advancing in lockstep and a live standings panel.
+ * App entry: intro → solo round → end panel. Framework-free; re-renders the
+ * game screen from the player's GameState after each action.
  */
 
-import { type Cell, GameMode, scoreBoard } from "./engine/index.js";
-import { Match } from "./game/match.js";
-import { Leaderboard, LocalLeaderboardStore, cleanName, todayISO } from "./game/leaderboard.js";
-import { HandHistory, LocalHandHistoryStore, type HandHistoryEntry } from "./game/handHistory.js";
+import { type Cell, GameMode, scoreBoard, seededRng } from "./engine/index.js";
+import { GameState } from "./game/gameState.js";
 import { renderIntro } from "./ui/intro.js";
 import { renderBoard } from "./ui/board.js";
 import { renderScorecard } from "./ui/scorecard.js";
-import { renderStandings } from "./ui/standings.js";
-import { renderMultiScorecard } from "./ui/multiScorecard.js";
-import { renderLeaderboardScreen, promptForName, promptPlayAgain } from "./ui/leaderboard.js";
+import { promptForPlayerCredentials, renderTournamentBoard, type PlayerCredentials } from "./ui/leaderboard.js";
+import { flushMoves, recordMove } from "./game/moveLog.js";
+import { isValidPlayerId, isValidPin, reportRound } from "./game/as400.js";
+import { relayEndpoint } from "./game/relay.js";
+import { createTournamentService, type JoinResult, type LeaderboardRow, type Player } from "./game/tournamentService.js";
 import { cardFace, cardLabel } from "./ui/cards.js";
 import { mountCourseBackground } from "./ui/courseBackground.js";
 import { mountPokerTableBackground } from "./ui/pokerTableBackground.js";
@@ -32,38 +31,143 @@ if (bgPoker) mountPokerTableBackground(bgPoker);
 mountBackgroundMusic(document.body);
 initDesignOverrides();
 
-const leaderboard = new Leaderboard(new LocalLeaderboardStore());
-const handHistory = new HandHistory(new LocalHandHistoryStore());
+// Real standings when VITE_RELAY_URL points at server/relay.mjs; an invented
+// field (clearly labelled as such) when it does not.
+const tournament = createTournamentService();
+
+// Retry anything stranded by an earlier connection drop or closed tab.
+void flushMoves();
+
+// Last chance to ship buffered moves when the tab goes away mid-round — the
+// exact case the audit trail exists for.
+window.addEventListener("pagehide", () => void flushMoves());
 
 function clear(): void {
   app.replaceChildren();
 }
 
-function start(mode: GameMode, opponents: number): void {
-  const match = new Match(mode, opponents);
-  renderGame(match);
+function start(mode: GameMode): void {
+  const game = new GameState(mode);
+  renderGame(game, mode);
 }
 
-function renderGame(match: Match): void {
+/**
+ * A QR code just encodes a URL with these params — the phone's camera app
+ * opens it like any link, and this reads them back out on load. Cleared from
+ * the address bar immediately so a refresh or share doesn't replay the join.
+ */
+function credentialsFromUrl(): PlayerCredentials | null {
+  const params = new URLSearchParams(window.location.search);
+  const playerId = params.get("player") ?? "";
+  const pin = params.get("pin") ?? "";
+  if (!params.has("player") && !params.has("pin")) return null;
+  window.history.replaceState(null, "", window.location.pathname);
+  if (!isValidPlayerId(playerId) || !isValidPin(pin)) return null;
+  return { playerId, pin };
+}
+
+/** Tournament: player ID + PIN → tee-off check → one scored, reported round. */
+async function startTournament(prefilled?: PlayerCredentials | null): Promise<void> {
+  const creds = prefilled ?? (await promptForPlayerCredentials());
+  if (creds === null) return;
+
+  const join = await tournament.join(creds.playerId, creds.pin);
+  if (!join.ok) {
+    showJoinRejected(join);
+    return;
+  }
+  const mode = GameMode.PokerStraightsMode;
+  // The deck comes from the server when there is one: it replays this round
+  // from the same seed to work out the score, so the cards must match.
+  const game = join.seed ? new GameState(mode, seededRng(join.seed)) : new GameState(mode);
+  logRoundStart(game, join, mode);
+  renderGame(game, mode, join);
+}
+
+/**
+ * Audit trail. The 6 auto-placed cards are logged first so the round can be
+ * replayed from an empty board; every later move continues the sequence.
+ */
+function logRoundStart(game: GameState, player: Player, mode: GameMode): void {
+  const scoreAfter = scoreBoard(game.snapshot().board, mode).round;
+  game.preplaced.forEach((p, i) => {
+    recordMove({
+      tournamentId: player.tournamentId,
+      playerId: player.playerId,
+      seq: i,
+      action: "round-start",
+      card: p.card,
+      cell: p.cell,
+      scoreAfter,
+      ts: new Date().toISOString(),
+    });
+  });
+}
+
+/** Log the move the player just made, with the score it produced. */
+function logLatestMove(game: GameState, player: Player, mode: GameMode): void {
+  const last = game.playLog[game.playLog.length - 1];
+  if (!last) return;
+  recordMove({
+    tournamentId: player.tournamentId,
+    playerId: player.playerId,
+    seq: game.preplaced.length + last.seq,
+    action: last.action,
+    card: last.card,
+    cell: last.cell,
+    scoreAfter: scoreBoard(game.snapshot().board, mode).round,
+    ts: new Date().toISOString(),
+  });
+}
+
+/** Rejected at the door — unknown player, wrong PIN, missed tee-off, or no server. */
+function showJoinRejected(join: Extract<JoinResult, { ok: false }>): void {
+  const reasons = {
+    "missed-tee-time": "Your tee-off time has passed, so you can no longer join. See a tournament official.",
+    "unknown-player": "That player ID was not recognised. Check the email we sent you and try again.",
+    "wrong-pin": "That PIN does not match the player ID. Check the email we sent you and try again.",
+    "not-paid": "We have not received your entry fee yet. Check your email for the payment link, or see an official.",
+    offline: "Could not reach the tournament server. Try again in a moment.",
+  };
+  showOverlay((panel) => {
+    const h2 = document.createElement("h2");
+    h2.textContent = "Cannot join";
+    const p = document.createElement("p");
+    p.textContent = reasons[join.reason];
+    panel.append(h2, p);
+
+    if (join.teeTime) {
+      const tee = document.createElement("p");
+      tee.className = "final-stat";
+      tee.textContent = `Tee-off was ${new Date(join.teeTime).toLocaleTimeString()}`;
+      panel.appendChild(tee);
+    }
+
+    const hint = document.createElement("p");
+    hint.className = "end-hint";
+    hint.textContent = "Press any key to continue";
+    panel.appendChild(hint);
+  }, showIntro);
+}
+
+/** `player` set = tournament round: score is reported, not name-prompted. */
+function renderGame(game: GameState, mode: GameMode, player?: Player): void {
   clear();
-  const game = match.human.state;
-  document.body.dataset.bg = match.mode === GameMode.GolfMode ? "golf" : "poker";
+  document.body.dataset.bg = mode === GameMode.GolfMode ? "golf" : "poker";
   const snap = game.snapshot();
-  const score = scoreBoard(snap.board, match.mode);
+  const score = scoreBoard(snap.board, mode);
 
   const screen = document.createElement("div");
   screen.className = "screen game";
 
-  screen.appendChild(renderScorecard(score, match.mode));
+  screen.appendChild(renderScorecard(score, mode));
 
   const main = document.createElement("div");
   main.className = "play-area";
 
-  // left rail: standings, next card, PASS, cards remaining
+  // left rail: next card, PASS, cards remaining
   const rail = document.createElement("aside");
   rail.className = "rail";
-
-  rail.appendChild(renderStandings(match.standings(), match.mode));
 
   const nextWrap = document.createElement("div");
   nextWrap.className = "next-card";
@@ -82,8 +186,9 @@ function renderGame(match: Match): void {
   passBtn.disabled = snap.isOver;
   passBtn.addEventListener("click", () => {
     if (!game.isOver) {
-      match.humanPass();
-      renderGame(match);
+      game.pass();
+      if (player) logLatestMove(game, player, mode);
+      renderGame(game, mode, player);
     }
   });
   rail.appendChild(passBtn);
@@ -95,8 +200,9 @@ function renderGame(match: Match): void {
 
   const board = renderBoard(game, {
     onPlace: (cell: Cell) => {
-      match.humanPlace(cell);
-      renderGame(match);
+      game.place(cell);
+      if (player) logLatestMove(game, player, mode);
+      renderGame(game, mode, player);
     },
   });
 
@@ -104,7 +210,7 @@ function renderGame(match: Match): void {
   screen.appendChild(main);
   app.appendChild(screen);
 
-  if (match.isOver) showEndPanel(match);
+  if (game.isOver) showEndPanel(game, mode, player);
 }
 
 /** Show an overlay panel; call `next()` on the first keypress or click. */
@@ -130,11 +236,11 @@ function showOverlay(build: (panel: HTMLElement) => void, next: () => void, wide
 /**
  * The single completed hand with the best result, plus its top 2 cards.
  * "Best" means highest points in PokerStr8ts but fewest strokes in Golf,
- * matching the direction already used for AI decisions and standings.
+ * matching the direction already used elsewhere.
  */
 function bestHand(
   score: ReturnType<typeof scoreBoard>,
-  completions: Match["human"]["state"]["handCompletions"],
+  completions: GameState["handCompletions"],
   mode: GameMode,
 ): { handName: string; points: number; topCards: number[] } | null {
   const complete = score.hands.filter((h) => h.complete);
@@ -145,21 +251,18 @@ function bestHand(
   return { handName: top.handName, points: top.points, topCards: rec?.topCards ?? [] };
 }
 
-// Stage 1: your own scorecard — the same HOLE/PAR/SCORE grid shown during
-// play — centered on screen, plus a best-hand callout.
-function showEndPanel(match: Match): void {
-  const rank = match.humanRank();
-  const total = match.ais.length + 1;
-  const heading = rank === 1 ? "You win! 🏆" : `You placed ${ordinal(rank)} of ${total}`;
-  const score = scoreBoard(match.human.state.snapshot().board, match.mode);
-  const best = bestHand(score, match.human.state.handCompletions, match.mode);
+// Your own scorecard — the same HOLE/PAR/SCORE grid shown during play —
+// centered on screen, plus a best-hand callout.
+function showEndPanel(game: GameState, mode: GameMode, player?: Player): void {
+  const score = scoreBoard(game.snapshot().board, mode);
+  const best = bestHand(score, game.handCompletions, mode);
 
   showOverlay((panel) => {
     const h2 = document.createElement("h2");
-    h2.textContent = heading;
+    h2.textContent = "Round complete!";
     panel.appendChild(h2);
 
-    panel.appendChild(renderScorecard(score, match.mode));
+    panel.appendChild(renderScorecard(score, mode));
 
     if (best) {
       const stat = document.createElement("p");
@@ -175,64 +278,33 @@ function showEndPanel(match: Match): void {
     hint.className = "end-hint";
     hint.textContent = "Press any key to continue";
     panel.appendChild(hint);
-  }, () => showFinalStandings(match), true);
+  }, () => {
+    if (player) void reportTournamentRound(game, mode, player);
+    else showIntro(); // practice: nothing recorded, straight back to the menu
+  }, true);
 }
 
-// Stage 2: everyone's scoring — the same grid, one row per player, ranked
-// best to worst to match the "final standings" already announced.
-function showFinalStandings(match: Match): void {
-  const players = [match.human, ...match.ais];
-  const rows = match.standings().map((s) => {
-    const p = players.find((pl) => pl.name === s.name)!;
-    return { name: p.name, isHuman: p.isHuman, board: p.state.snapshot().board };
+/**
+ * Tournament round is over: report the score to the AS400 datastream and
+ * show the field. Practice rounds never reach here — a practice score is not
+ * recorded anywhere.
+ */
+async function reportTournamentRound(game: GameState, mode: GameMode, player: Player): Promise<void> {
+  const score = scoreBoard(game.snapshot().board, mode);
+  await flushMoves(); // ship the tail of the audit trail before the score lands
+
+  const reported = await reportRound({
+    playerId: player.playerId,
+    pin: player.pin,
+    score,
+    handCompletions: game.handCompletions,
   });
-
-  showOverlay((panel) => {
-    const h2 = document.createElement("h2");
-    h2.textContent = "Final Standings";
-    panel.appendChild(h2);
-    panel.appendChild(renderMultiScorecard(rows, match.mode));
-    const hint = document.createElement("p");
-    hint.className = "end-hint";
-    hint.textContent = "Press any key to continue";
-    panel.appendChild(hint);
-  }, () => void continueAfterRound(match), true);
-}
-
-// Persist the human's top-2-cards-per-hand history, submit their score to the
-// persistent leaderboard, then show the leaderboard and ask to play again.
-async function continueAfterRound(match: Match): Promise<void> {
-  const humanScore = scoreBoard(match.human.state.snapshot().board, match.mode).round;
-  let highlight: Parameters<typeof renderLeaderboardScreen>[0]["highlight"];
-  let playerName = "You";
-  if (await leaderboard.wouldQualify(humanScore, match.mode)) {
-    const name = await promptForName(match.humanRank());
-    if (name !== null) {
-      playerName = cleanName(name);
-      const entry = { name: playerName, score: humanScore, mode: match.mode, date: todayISO() };
-      const result = await leaderboard.submit(entry);
-      if (result.qualified) highlight = entry;
-    }
-  }
-
-  const date = todayISO();
-  const records: HandHistoryEntry[] = match.human.state.handCompletions.map((h) => ({
-    playerName,
-    mode: match.mode,
-    date,
-    hole: h.hole,
-    topCards: h.topCards,
-  }));
-  void handHistory.appendMany(records);
-
-  showLeaderboardWith(match.mode, highlight);
-  if (await promptPlayAgain()) showIntro();
-}
-
-function showLeaderboardWith(mode: GameMode, highlight: Parameters<typeof renderLeaderboardScreen>[0]["highlight"]): void {
-  clear();
-  document.body.dataset.bg = "intro";
-  app.appendChild(renderLeaderboardScreen({ leaderboard, mode, highlight, onBack: showIntro }));
+  // Prefer the server's figure: it derived the score from the moves, so if the
+  // two ever disagree the server is the one that counts.
+  const finalScore = reported.score ?? score.round;
+  tournament.recordLocalScore(player.tournamentId, player.playerId, player.playerName, finalScore);
+  const rows = await tournament.leaderboard(player.tournamentId, player.playerId);
+  showRoundStandings(finalScore, reported.sent, rows, player);
 }
 
 function ordinal(n: number): string {
@@ -241,24 +313,126 @@ function ordinal(n: number): string {
   return n + (s[(v - 20) % 10] ?? s[v] ?? s[0]!);
 }
 
-// keyboard: P = pass
-document.addEventListener("keydown", (e) => {
-  if (e.key.toLowerCase() === "p") {
-    const btn = document.querySelector<HTMLButtonElement>(".pass-btn");
-    if (btn && !btn.disabled) btn.click();
-  }
-});
+/**
+ * End of a tournament round: the field on the signboard, with the player's
+ * placing and a warning if their score has not reached the server yet.
+ */
+function showRoundStandings(
+  score: number,
+  sent: boolean,
+  rows: LeaderboardRow[],
+  player?: Player,
+): void {
+  const you = rows.find((r) => r.isYou);
+  clear();
+  document.body.dataset.bg = "intro";
+  app.appendChild(
+    renderTournamentBoard({
+      rows,
+      subtitle: you ? `You finished ${ordinal(you.rank)} of ${rows.length} with ${score}` : `Your round: ${score}`,
+      warning: sent
+        ? undefined
+        : "Your score has not reached the scoring server yet. It is saved on this device and sends automatically — tell a tournament official.",
+      mock: tournament.isMock,
+      // Players finish at different times, so the board keeps re-reading while
+      // it is open rather than freezing at the moment this player finished.
+      refresh: player
+        ? () => tournament.leaderboard(player.tournamentId, player.playerId)
+        : undefined,
+      onBack: showIntro,
+    }),
+  );
+}
 
 function showIntro(): void {
   clear();
   document.body.dataset.bg = "intro";
-  app.appendChild(renderIntro(start, showLeaderboard));
+  app.appendChild(renderIntro(start, () => void startTournament()));
 }
 
-function showLeaderboard(mode: GameMode = GameMode.PokerStraightsMode): void {
-  clear();
-  document.body.dataset.bg = "intro";
-  app.appendChild(renderLeaderboardScreen({ leaderboard, mode, onBack: showIntro }));
+/**
+ * Square returns the player here after checkout, carrying a signed ticket.
+ *
+ * The credentials are shown on screen as well as emailed, because email is one
+ * delivery path and it fails in ordinary ways — a typo, a spam folder, a
+ * bounce — which would otherwise leave someone who has paid unable to play.
+ *
+ * The return usually beats the webhook confirming the payment, so "not yet" is
+ * expected and polled on rather than reported as a problem.
+ */
+async function showClaim(claim: string): Promise<void> {
+  window.history.replaceState(null, "", window.location.pathname);
+  showIntro();
+
+  let result: {
+    paid?: boolean; playerId?: string; name?: string; pin?: string; error?: string;
+  } = {};
+
+  // ~20 seconds of patience; a webhook that has not arrived by then is not
+  // about to, and the email is still coming.
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      const res = await fetch(relayEndpoint("/claim"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claim }),
+      });
+      result = await res.json();
+      if (result.paid) break;
+    } catch {
+      /* keep trying; the page below reports whatever we ended up with */
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+
+  showOverlay((panel) => {
+    const h2 = document.createElement("h2");
+    const p = document.createElement("p");
+
+    if (result.paid && result.pin && result.playerId) {
+      h2.textContent = "You're entered";
+      p.textContent = "Write these down — you need both to join. They're in your email too.";
+      panel.append(h2, p, credentialCard(result.playerId, result.pin));
+    } else if (result.paid) {
+      // Paid, but the PIN is no longer collectable here.
+      h2.textContent = "You're entered";
+      p.textContent =
+        "Thank you — your entry is confirmed. We've emailed your Player ID and PIN; " +
+        "you'll need both to join. Check your inbox, and your spam folder if it isn't there.";
+      panel.append(h2, p);
+    } else {
+      h2.textContent = "Payment is still confirming";
+      p.textContent =
+        "This can take a moment. Your Player ID and PIN will be emailed as soon as it clears — " +
+        "if nothing arrives, speak to a tournament official.";
+      panel.append(h2, p);
+    }
+
+    const hint = document.createElement("p");
+    hint.className = "end-hint";
+    hint.textContent = "Press any key to continue";
+    panel.appendChild(hint);
+  }, showIntro);
 }
 
-showIntro();
+/** The two things a player has to keep, shown large enough to copy down. */
+function credentialCard(playerId: string, pin: string): HTMLElement {
+  const card = document.createElement("dl");
+  card.className = "credential-card";
+  const fields: [string, string][] = [["Player ID", playerId], ["PIN", pin]];
+  for (const [label, value] of fields) {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    card.append(dt, dd);
+  }
+  return card;
+}
+
+const params = new URLSearchParams(window.location.search);
+const claim = params.get("claim");
+const qrCreds = credentialsFromUrl();
+if (claim) void showClaim(claim);
+else if (qrCreds) void startTournament(qrCreds);
+else showIntro();

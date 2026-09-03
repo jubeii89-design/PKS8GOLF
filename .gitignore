@@ -4,3 +4,14 @@ dist/
 *.zip
 bg-*.png
 smoke-*.png
+
+# Relay runtime data and secrets — never commit
+relay-data/
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.*
+
+# Compiled engine for the relay — built by npm run build:server
+server/lib/

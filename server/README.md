@@ -49,6 +49,10 @@ values belong in the repository.**
 | `CURRENCY` | Default `CAD`. |
 | `PLAY_URL` | Link put in the email. |
 | `TOURNAMENT_NAME` / `_CHARITY` / `_DATE` / `_TEE_OFF` / `_CONTACT` | Shown on the signup page and in the email. |
+| `SESSION_SECRET` | Signs session tokens. Unset means a random one, so a restart ejects players mid-round. **Set it.** |
+| `TEE_OFF_AT` | ISO timestamp after which nobody new may start. Unset means no cutoff. |
+| `ADMIN_TOKEN` | Guards `/admin/*`. Unset leaves those endpoints closed. |
+| `SIGNUP_LIMIT` | Signups allowed per address per 10 minutes (default 5). |
 
 `GET /health` reports which of these are live, so you can confirm the setup
 before opening entries rather than discovering a gap mid-event.
@@ -93,18 +97,47 @@ one path or the other.
 | `POST` | `/moves` | Accept a batch of move events; appended to `moves.jsonl` |
 | `POST` | `/round` | Record a finished round, forward the record to the AS400 |
 | `GET` | `/leaderboard?playerId=` | Current standings, caller flagged as `You` |
-| `GET` | `/health` | `{ ok, rounds, as400Pending }` |
+| `POST` | `/join` | Check credentials, open a round, issue a session token and deck seed |
+| `POST` | `/admin/reissue` | Re-send a paid player's credentials with a fresh PIN |
+| `GET` | `/admin/attention` | Who paid but has no PIN, or paid but never played |
+| `GET` | `/health` | Roster counts, pending deliveries, and what is configured |
+
+Every write after `/join` needs the session token as `Authorization: Bearer`.
+Identity is taken from the token, not the request body, so a caller cannot act
+for anyone but themselves.
+
+## Scores are derived, never accepted
+
+A client that computes its own score can lie about it, and authentication does
+not fix that — a paying player can authenticate honestly and still send
+`score: 9999`. So the server works the score out itself.
+
+It holds both halves. The **deck** is issued at join and signed into the session
+token, so a player cannot re-join until they like their cards. The **moves** are
+already streamed for the audit trail. Replaying those through the same engine
+the browser ran gives the score; the client's own figure is only compared, and
+logged when it differs.
+
+`npm run build:server` compiles the real engine to `server/lib/`, so the relay
+runs the identical scoring code rather than a second implementation that would
+drift. The engine validates a replay for free: `place()` throws on an occupied
+or out-of-play cell, so fabricated moves fail to replay instead of quietly
+producing a score. Such a round is refused with 422 and left open rather than
+guessed at.
+
+The AS400 record is built server-side from the derived score, so what the
+mainframe is told and what the leaderboard shows cannot disagree.
 
 ## Storage
 
-Append-only JSONL, one line per event, written as it arrives:
+SQLite (`tournament.db`), via `node:sqlite` — built into Node 22, so there is
+nothing to install and no second process to run. One file you can copy, inspect
+with any SQLite client, and hand to someone after the event.
 
-- `rounds.jsonl` — one line per finished round, including the exact AS400 record
-- `moves.jsonl` — one line per move, with the server's receipt time
-
-A tournament is roughly 100 players × 45 moves, so this stays in the low
-thousands of lines. A database would be more moving parts than the problem has.
-Restarting replays `rounds.jsonl`, so the field survives a crash.
+Tables: `players`, `rounds`, `moves`, `as400_queue`. Beyond being queryable it
+buys correctness a log could not — a round must belong to a player who exists,
+moves are unique per `(round, seq)` so a retried flush is a no-op, the delivery
+queue survives a restart, and multi-row writes are transactional.
 
 ## When the AS400 is down
 
@@ -120,8 +153,13 @@ Records are also still written to each player's device, so
 ## Checking it works
 
 ```bash
+npm run checks         # everything below, in order
+
+npm run auth:check     # nobody writes without having joined
 npm run relay:check    # moves, AS400 delivery, standings, restart recovery
 npm run signup:check   # signup, payment, webhook forgery, email, join
+npm run verify:check   # a cheat and an honest player score identically
+npm run ops:check      # tee-off lockout, credential re-issue, rate limiting
 ```
 
 Spins up a stub AS400 and exercises the whole thing: move batches persist,

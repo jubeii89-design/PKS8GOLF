@@ -319,6 +319,28 @@ export class Db {
     );
   }
 
+  /**
+   * Everyone, with the facts an organiser actually needs at a glance: have they
+   * paid, do they hold a PIN, have they finished anything, and what did they
+   * score. One query rather than a page that fetches per player.
+   */
+  allPlayers() {
+    return this.#all(
+      `SELECT p.player_id AS playerId,
+              p.name,
+              p.email,
+              p.status,
+              p.tee_time AS teeTime,
+              p.pin_hash IS NOT NULL AS hasPin,
+              COUNT(r.round_id) FILTER (WHERE r.finished_at IS NOT NULL) AS rounds,
+              MAX(r.score) AS bestScore
+         FROM players p
+         LEFT JOIN rounds r ON r.player_id = p.player_id
+        GROUP BY p.player_id
+        ORDER BY p.name`,
+    );
+  }
+
   paidButNoPin() {
     return this.#all(
       `SELECT player_id AS playerId, name, email FROM players WHERE status = 'paid' AND pin_hash IS NULL`,

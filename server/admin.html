@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tournament control</title>
+<style>
+  :root {
+    --bg: #10231a; --panel: #16301f; --line: #2c6b42; --ink: #eaf3ec;
+    --dim: #9fbfa8; --gold: #e8c766; --bad: #ff9b9b; --good: #8fd8a0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px 16px 60px; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 2px; color: var(--gold); }
+  h2 { font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); margin: 28px 0 10px; }
+  .sub { color: var(--dim); font-size: 13px; margin: 0 0 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+
+  /* Health strip */
+  .stats { display: flex; flex-wrap: wrap; gap: 10px; }
+  .stat { flex: 1 1 130px; background: rgba(255,255,255,.04); border-radius: 8px; padding: 10px 12px; }
+  .stat b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+  .stat span { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+  .warn b { color: var(--bad); }
+  .ok b { color: var(--good); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+       color: var(--dim); font-weight: 600; padding: 0 8px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 9px 8px; border-bottom: 1px solid rgba(159,191,168,.12); vertical-align: middle; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+
+  .tag { font-size: 11px; padding: 2px 7px; border-radius: 20px; white-space: nowrap; }
+  .tag.paid { background: rgba(143,216,160,.16); color: var(--good); }
+  .tag.pending { background: rgba(255,255,255,.08); color: var(--dim); }
+  .tag.stuck { background: rgba(255,155,155,.16); color: var(--bad); }
+
+  button { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 7px; cursor: pointer;
+           border: 1px solid var(--line); background: rgba(255,255,255,.06); color: var(--ink); }
+  button:hover:not(:disabled) { background: rgba(255,255,255,.12); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.go { background: var(--gold); color: #10231a; border-color: var(--gold); font-weight: 700; }
+
+  input { font: inherit; padding: 9px 12px; border-radius: 7px; border: 1px solid var(--line);
+          background: rgba(0,0,0,.3); color: var(--ink); width: 100%; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .msg { margin-top: 12px; padding: 10px 12px; border-radius: 7px; font-size: 13px; }
+  .msg.err { background: rgba(150,40,40,.3); border: 1px solid #a44; color: #ffd9d9; }
+  .msg.good { background: rgba(60,140,80,.25); border: 1px solid #3a7; color: #d6ffe2; }
+  .empty { color: var(--dim); padding: 14px 0; text-align: center; font-size: 13px; }
+  .muted { color: var(--dim); font-size: 12px; }
+  #gate { max-width: 380px; margin: 60px auto; }
+</style>
+</head>
+<body>
+<main>
+  <!-- Nothing here is fetched until a token is entered; the page itself holds
+       no data and no secrets. -->
+  <div id="gate" class="panel" hidden>
+    <h1>Tournament control</h1>
+    <p class="sub">Enter the admin token to continue.</p>
+    <div class="row">
+      <input id="token" type="password" placeholder="Admin token" autocomplete="off" />
+      <button class="go" id="unlock">Open</button>
+    </div>
+    <div id="gateMsg" class="msg err" hidden></div>
+  </div>
+
+  <div id="app" hidden>
+    <h1>Tournament control</h1>
+    <p class="sub" id="banner"></p>
+
+    <div class="stats" id="stats"></div>
+
+    <h2>Needs attention</h2>
+    <div class="panel" id="attention"></div>
+
+    <h2>Find a player</h2>
+    <div class="panel">
+      <input id="search" placeholder="Name, email or player ID" autocomplete="off" />
+      <div id="results" style="margin-top:12px"></div>
+    </div>
+
+    <h2>Standings</h2>
+    <div class="panel" id="standings"></div>
+
+    <div id="msg" class="msg" hidden></div>
+    <p class="muted" style="margin-top:24px">
+      Refreshes every 15 seconds. Scores cannot be edited here by design — they are
+      derived from replayed moves, so a wrong one is a question to answer, not a
+      number to overwrite.
+    </p>
+  </div>
+</main>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const KEY = "pks8golf.adminToken";
+let token = sessionStorage.getItem(KEY) ?? "";
+let players = [];
+
+/**
+ * Player names and emails are typed by the public at signup. Everything from
+ * the server is written with textContent, never innerHTML — otherwise someone
+ * could sign up with a name containing markup and run it inside this page,
+ * which is the one page holding the admin token.
+ */
+const cell = (text, cls) => {
+  const td = document.createElement("td");
+  if (cls) td.className = cls;
+  td.textContent = text ?? "";
+  return td;
+};
+
+const api = async (path, opts = {}) => {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, ...(opts.headers ?? {}) },
+  });
+  if (res.status === 403) throw new Error("Token rejected.");
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error ?? `Request failed (${res.status})`);
+  return body;
+};
+
+function say(text, good = true) {
+  const el = $("msg");
+  el.textContent = text;
+  el.className = `msg ${good ? "good" : "err"}`;
+  el.hidden = false;
+  setTimeout(() => { el.hidden = true; }, 6000);
+}
+
+function statTile(label, value, tone = "") {
+  const d = document.createElement("div");
+  d.className = `stat ${tone}`;
+  const b = document.createElement("b");
+  b.textContent = String(value);
+  const s = document.createElement("span");
+  s.textContent = label;
+  d.append(b, s);
+  return d;
+}
+
+function renderHealth(h) {
+  $("banner").textContent =
+    `Square: ${h.square} · Email: ${h.email} · Webhooks verifiable: ${h.webhooksVerifiable ? "yes" : "NO"}`;
+  const stats = $("stats");
+  stats.replaceChildren(
+    statTile("Registered", h.registered),
+    statTile("Paid", h.paid),
+    statTile("Rounds in", players.filter((p) => p.rounds > 0).length),
+    // A backlog here means the mainframe is not taking records. It is the one
+    // number that silently grows while everything looks fine.
+    statTile("AS400 queue", h.as400Pending, h.as400Pending > 0 ? "warn" : "ok"),
+  );
+}
+
+function actionButton(label, run) {
+  const b = document.createElement("button");
+  b.textContent = label;
+  b.addEventListener("click", async () => {
+    b.disabled = true;
+    try { await run(); } catch (e) { say(e.message, false); } finally { b.disabled = false; }
+  });
+  return b;
+}
+
+function playerRow(p, { withActions = true } = {}) {
+  const tr = document.createElement("tr");
+  tr.append(cell(p.name), cell(p.playerId), cell(p.email));
+
+  const status = document.createElement("td");
+  const tag = document.createElement("span");
+  if (p.status === "paid" && !p.hasPin) { tag.className = "tag stuck"; tag.textContent = "paid, no PIN"; }
+  else if (p.status === "paid") { tag.className = "tag paid"; tag.textContent = "paid"; }
+  else { tag.className = "tag pending"; tag.textContent = "not paid"; }
+  status.appendChild(tag);
+  tr.appendChild(status);
+
+  tr.append(cell(p.rounds ? String(p.rounds) : "—", "num"));
+  tr.append(cell(p.bestScore ?? "—", "num"));
+
+  if (withActions) {
+    const td = document.createElement("td");
+    td.style.textAlign = "right";
+    if (p.status === "paid") {
+      td.appendChild(actionButton("Re-send PIN", async () => {
+        const r = await api("/admin/reissue", { method: "POST", body: JSON.stringify({ playerId: p.playerId }) });
+        say(r.emailed
+          ? `New PIN emailed to ${p.name}. Their old PIN no longer works.`
+          : `New PIN issued for ${p.name}, but the email did NOT send (${r.reason ?? "unknown"}).`, r.emailed);
+        await refresh();
+      }));
+      td.appendChild(document.createTextNode(" "));
+      td.appendChild(actionButton("Unlock", async () => {
+        const r = await api("/admin/unlock", { method: "POST", body: JSON.stringify({ playerId: p.playerId }) });
+        say(r.wasLocked ? `${p.name} unlocked — they can try their PIN again.` : `${p.name} was not locked.`);
+      }));
+    }
+    tr.appendChild(td);
+  }
+  return tr;
+}
+
+function table(rows, opts) {
+  if (rows.length === 0) return null;
+  const t = document.createElement("table");
+  const head = document.createElement("tr");
+  for (const h of ["Player", "ID", "Email", "Status", "Rounds", "Best", ""]) {
+    const th = document.createElement("th");
+    th.textContent = h;
+    head.appendChild(th);
+  }
+  t.appendChild(head);
+  for (const p of rows) t.appendChild(playerRow(p, opts));
+  return t;
+}
+
+function renderAttention() {
+  const box = $("attention");
+  // Paid and cannot play: either no PIN was ever issued, or they never started.
+  const stuck = players.filter((p) => p.status === "paid" && !p.hasPin);
+  const notPlayed = players.filter((p) => p.status === "paid" && p.hasPin && p.rounds === 0);
+
+  box.replaceChildren();
+  if (stuck.length === 0 && notPlayed.length === 0) {
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = "Nobody is stuck. Everyone who has paid holds a PIN.";
+    box.appendChild(p);
+    return;
+  }
+  if (stuck.length) {
+    const h = document.createElement("p");
+    h.className = "muted";
+    h.textContent = `${stuck.length} paid but hold no PIN — they cannot play until it is re-sent.`;
+    box.append(h, table(stuck));
+  }
+  if (notPlayed.length) {
+    const h = document.createElement("p");
+    h.className = "muted";
+    h.style.marginTop = stuck.length ? "18px" : "0";
+    h.textContent = `${notPlayed.length} paid and have not finished a round yet.`;
+    box.append(h, table(notPlayed));
+  }
+}
+
+function renderSearch() {
+  const q = $("search").value.trim().toLowerCase();
+  const box = $("results");
+  box.replaceChildren();
+  if (q.length < 2) {
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = "Type at least two characters.";
+    box.appendChild(p);
+    return;
+  }
+  const hits = players.filter((p) =>
+    p.name.toLowerCase().includes(q) || p.email.toLowerCase().includes(q) || p.playerId.toLowerCase().includes(q),
+  ).slice(0, 25);
+  const t = table(hits);
+  if (t) box.appendChild(t);
+  else {
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = "No match.";
+    box.appendChild(p);
+  }
+}
+
+function renderStandings(rows) {
+  const box = $("standings");
+  box.replaceChildren();
+  if (rows.length === 0) {
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = "No finished rounds yet.";
+    box.appendChild(p);
+    return;
+  }
+  const t = document.createElement("table");
+  const head = document.createElement("tr");
+  for (const h of ["#", "Player", "Score"]) {
+    const th = document.createElement("th");
+    th.textContent = h;
+    head.appendChild(th);
+  }
+  t.appendChild(head);
+  for (const r of rows.slice(0, 25)) {
+    const tr = document.createElement("tr");
+    tr.append(cell(r.rank, "num"), cell(r.playerName), cell(r.score, "num"));
+    t.appendChild(tr);
+  }
+  box.appendChild(t);
+}
+
+async function refresh() {
+  const [health, roster, board] = await Promise.all([
+    api("/health"),
+    api("/admin/players"),
+    fetch("/leaderboard").then((r) => r.json()),
+  ]);
+  players = roster.players ?? [];
+  renderHealth(health);
+  renderAttention();
+  renderSearch();
+  renderStandings(board.rows ?? []);
+}
+
+async function open(candidate) {
+  token = candidate;
+  await api("/admin/players"); // throws if the token is wrong
+  sessionStorage.setItem(KEY, token);
+  $("gate").hidden = true;
+  $("app").hidden = false;
+  await refresh();
+  setInterval(() => refresh().catch(() => {}), 15000);
+}
+
+$("unlock").addEventListener("click", async () => {
+  try { await open($("token").value.trim()); }
+  catch (e) { $("gateMsg").textContent = e.message; $("gateMsg").hidden = false; }
+});
+$("token").addEventListener("keydown", (e) => { if (e.key === "Enter") $("unlock").click(); });
+$("search").addEventListener("input", renderSearch);
+
+// A token kept from earlier in this browser session skips the gate.
+if (token) {
+  open(token).catch(() => { $("gate").hidden = false; sessionStorage.removeItem(KEY); });
+} else {
+  $("gate").hidden = false;
+}
+</script>
+</body>
+</html>

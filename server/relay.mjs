@@ -33,8 +33,9 @@
 
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
-import { mkdir, readdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Db } from "./db.mjs";
 import { Roster } from "./roster.mjs";
 import * as square from "./square.mjs";
@@ -148,6 +149,15 @@ const CLAIM_HOLD_MS = 30 * 60 * 1000;
 const BACKUP_DIR = process.env.BACKUP_DIR ?? "";
 const BACKUP_INTERVAL_MS = Number(process.env.BACKUP_INTERVAL_MS ?? 5 * 60 * 1000);
 const BACKUP_KEEP = Number(process.env.BACKUP_KEEP ?? 12);
+
+/**
+ * The organiser's page, read once at boot.
+ *
+ * Held in memory rather than read per request: it is a few kilobytes, it never
+ * changes while running, and a page that fails to load because the disk was
+ * busy is exactly the wrong thing to discover mid-event.
+ */
+const ADMIN_PAGE = await readFile(join(dirname(fileURLToPath(import.meta.url)), "admin.html"), "utf8");
 
 const db = new Db(DATA_DIR);
 const roster = new Roster(db);
@@ -836,6 +846,32 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true, emailed: issued.sent, reason: issued.reason });
     }
 
+    // The organiser's page. It carries no data and no secrets — everything it
+    // shows is fetched with the admin token afterwards — so it is served
+    // without one. Restrict /admin at your reverse proxy if you want a second
+    // layer; the token is the one that actually guards the data.
+    if (req.method === "GET" && (url.pathname === "/admin" || url.pathname === "/admin/")) {
+      cors(res, req);
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(
+        ADMIN_TOKEN === ""
+          ? "<!doctype html><meta charset=utf-8><title>Admin disabled</title>" +
+            "<body style='font:16px system-ui;padding:40px;background:#10231a;color:#eaf3ec'>" +
+            "<h1 style='color:#e8c766'>Admin is disabled</h1>" +
+            "<p>Set <code>ADMIN_TOKEN</code> on the relay and restart to enable it.</p>"
+          : ADMIN_PAGE,
+      );
+      return;
+    }
+
+    // The whole field, with the facts an organiser needs at a glance.
+    if (req.method === "GET" && url.pathname === "/admin/players") {
+      if (ADMIN_TOKEN === "" || bearerFrom(req) !== ADMIN_TOKEN) {
+        return json(res, 403, { error: "forbidden" });
+      }
+      return json(res, 200, { players: db.allPlayers() });
+    }
+
     // Clear a lockout, for the player who fumbled their own PIN ten times or
     // was locked out by someone else guessing at them.
     if (req.method === "POST" && url.pathname === "/admin/unlock") {
@@ -902,7 +938,7 @@ server.listen(PORT, () => {
   log(`  square   ${square.isConfigured() ? square.environment() : "NOT CONFIGURED — signups closed"}`);
   log(`  email    ${email.isConfigured() ? "smtp" : "NOT CONFIGURED — credentials will not be sent"}`);
   log(`  tee-off  ${TEE_OFF_AT || "no cutoff — players may start any time"}`);
-  log(`  admin    ${ADMIN_TOKEN ? "enabled" : "disabled — set ADMIN_TOKEN to re-issue credentials"}`);
+  log(`  admin    ${ADMIN_TOKEN ? `enabled at /admin on :${PORT}` : "disabled — set ADMIN_TOKEN to enable /admin"}`);
   log(`  origins  ${ALLOWED_ORIGINS.length > 0 ? ALLOWED_ORIGINS.join(", ") : "any (set ALLOWED_ORIGINS to restrict)"}`);
   log(`  backups  ${BACKUP_DIR ? `${BACKUP_DIR} every ${BACKUP_INTERVAL_MS / 60000}min, keeping ${BACKUP_KEEP}` : "NONE — set BACKUP_DIR"}`);
   log(`  as400    reporting ${AS400_SCORE_MODE === 1 ? "GOLF strokes" : "POKER points"}, negatives=${AS400_NEGATIVE}`);

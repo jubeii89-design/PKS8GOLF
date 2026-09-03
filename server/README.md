@@ -125,6 +125,8 @@ one path or the other.
 | `POST` | `/admin/reissue` | Re-send a paid player's credentials with a fresh PIN |
 | `GET` | `/admin/attention` | Who paid but has no PIN, or paid but never played |
 | `POST` | `/admin/unlock` | Clear a player's PIN lockout |
+| `GET` | `/admin` | The organiser's page (see below) |
+| `GET` | `/admin/players` | The whole field, with status and scores |
 | `GET` | `/health` | Roster counts, pending deliveries, and what is configured |
 
 Every write after `/join` needs the session token as `Authorization: Bearer`.
@@ -201,6 +203,33 @@ Tables: `players`, `rounds`, `moves`, `as400_queue`. Beyond being queryable it
 buys correctness a log could not — a round must belong to a player who exists,
 moves are unique per `(round, seq)` so a retried flush is a no-op, the delivery
 queue survives a restart, and multi-row writes are transactional.
+
+## The organiser's page
+
+`http://your-relay/admin` — everything an organiser needs on the day, without a
+terminal. Set `ADMIN_TOKEN` to enable it; unset, the page says so plainly
+rather than 404ing.
+
+It shows the field at a glance, who is **stuck** (paid but holding no PIN, or
+paid and not started), a search, the live standings, and whether the AS400
+queue is backing up — the one number that grows silently while everything else
+looks fine. Two actions: re-send a player's credentials, and clear a PIN
+lockout.
+
+It deliberately **cannot edit scores.** Those are derived from replayed moves,
+so a wrong one is a question to answer, not a number to overwrite — and a tool
+that can rewrite results at a prize event is a liability.
+
+It is served by the relay rather than built into the game, so it never ships to
+the public site, it can never drift out of sync with the endpoints it calls,
+and you can restrict `/admin` at your reverse proxy as a second layer. The page
+carries no data and no secrets — everything it shows is fetched with the token
+afterwards — so the page itself is served without one.
+
+Player names are typed by the public at signup and are rendered as text, never
+markup. `npm run admin:check` includes a player whose name is an XSS payload
+and asserts it does not execute, because the admin page is the one page holding
+the token.
 
 ## Holding up on the day
 

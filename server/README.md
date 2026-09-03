@@ -64,15 +64,24 @@ before opening entries rather than discovering a gap mid-event.
    is the whole reason for using a hosted checkout.
 2. Square posts a webhook when the payment completes. It is believed only if the
    signature verifies; a forged one is refused and logged.
-3. Only then is a **PIN minted** and emailed with the tournament details. A
-   credential that existed before payment could be used before payment, so none
-   does.
+3. Only then is a **PIN minted**. It reaches the player two ways: emailed with
+   the tournament details, **and** shown on the screen Square returns them to.
+   Email fails in ordinary ways — a typo, a spam folder, a bounce — and it used
+   to be the only route, which meant a failed email left someone who had paid
+   unable to play.
+
+   The return carries a signed claim ticket rather than a player id, so nobody
+   can harvest PINs by guessing ids, and that ticket may do nothing except
+   claim — it is not a session and cannot submit a score. A credential that
+   existed before payment could be used before payment, so none does.
 4. `POST /join` checks the ID and PIN against the roster. Unknown player, wrong
    PIN, and paid-but-not-yet are now real, distinguishable answers.
 
-PINs are stored salted and hashed. The plaintext exists only in the moment
-between minting and mailing — never on disk, never in the log. A leaked roster
-file therefore does not hand over the field's credentials.
+PINs are stored salted and hashed. The plaintext is held in memory for 30
+minutes so the return screen can show it, and never written to the database or
+the log — so a leaked database still does not hand over the field's
+credentials. A relay restart drops those held PINs; the email remains the
+fallback.
 
 If mail fails after a payment succeeds the log says `PAID BUT NOT EMAILED` with
 the player ID. That person has been charged and cannot play until their
@@ -98,6 +107,7 @@ one path or the other.
 | `POST` | `/round` | Record a finished round, forward the record to the AS400 |
 | `GET` | `/leaderboard?playerId=` | Current standings, caller flagged as `You` |
 | `POST` | `/join` | Check credentials, open a round, issue a session token and deck seed |
+| `POST` | `/claim` | Exchange the ticket in Square's return URL for the player's credentials |
 | `POST` | `/admin/reissue` | Re-send a paid player's credentials with a fresh PIN |
 | `GET` | `/admin/attention` | Who paid but has no PIN, or paid but never played |
 | `GET` | `/health` | Roster counts, pending deliveries, and what is configured |
@@ -160,6 +170,7 @@ npm run relay:check    # moves, AS400 delivery, standings, restart recovery
 npm run signup:check   # signup, payment, webhook forgery, email, join
 npm run verify:check   # a cheat and an honest player score identically
 npm run ops:check      # tee-off lockout, credential re-issue, rate limiting
+npm run claim:check    # collecting credentials after payment, and the race
 ```
 
 Spins up a stub AS400 and exercises the whole thing: move batches persist,

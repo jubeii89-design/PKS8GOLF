@@ -24,6 +24,23 @@ import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
  */
 export const TOKEN_TTL_MS = 6 * 60 * 60 * 1000;
 
+/**
+ * A claim token lives longer than a round: it is handed out at checkout and a
+ * player may not open the link until later the same day.
+ */
+export const CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * What a token is allowed to do.
+ *
+ * Both kinds are signed with the same key, so without this a claim token —
+ * which is handed out in a URL and therefore lands in browser history, logs
+ * and shoulder-view — would also be a valid ticket to submit scores. Every
+ * verification names the purpose it expects.
+ */
+export const PURPOSE_SESSION = "session";
+export const PURPOSE_CLAIM = "claim";
+
 const CONFIGURED_SECRET = process.env.SESSION_SECRET ?? "";
 /**
  * Falling back to a random secret keeps the relay runnable without setup, at
@@ -55,17 +72,30 @@ export function newRoundId() {
  * better deal by re-joining.
  */
 export function issueToken({ playerId, roundId, extra = {} }, now = Date.now()) {
-  const payload = { playerId, roundId, exp: now + TOKEN_TTL_MS, ...extra };
+  const payload = { playerId, roundId, purpose: PURPOSE_SESSION, exp: now + TOKEN_TTL_MS, ...extra };
   const payloadB64 = b64url(JSON.stringify(payload));
   return `${payloadB64}.${sign(payloadB64)}`;
 }
 
 /**
- * Check a token and return what it claims. Every failure is reported the same
- * way to the caller's log, but distinguished here so a genuinely expired
- * session can be told apart from a forged one.
+ * A ticket proving the holder is the person who just paid for `playerId`.
+ *
+ * It goes in the URL Square returns them to, which is why it may do nothing
+ * except claim credentials — see PURPOSE_CLAIM.
  */
-export function verifyToken(token, now = Date.now()) {
+export function issueClaimToken(playerId, now = Date.now()) {
+  const payloadB64 = b64url(JSON.stringify({ playerId, purpose: PURPOSE_CLAIM, exp: now + CLAIM_TTL_MS }));
+  return `${payloadB64}.${sign(payloadB64)}`;
+}
+
+/**
+ * Check a token and return what it claims.
+ *
+ * `purpose` is required rather than optional: a caller that forgets to say
+ * what it expects would accept either kind, which is the exact confusion this
+ * guards against.
+ */
+export function verifyToken(token, purpose = PURPOSE_SESSION, now = Date.now()) {
   if (typeof token !== "string" || !token.includes(".")) return { ok: false, reason: "malformed" };
   const [payloadB64, providedSig] = token.split(".", 2);
   if (!payloadB64 || !providedSig) return { ok: false, reason: "malformed" };
@@ -83,6 +113,9 @@ export function verifyToken(token, now = Date.now()) {
     return { ok: false, reason: "malformed" };
   }
   if (typeof claims.exp !== "number" || claims.exp < now) return { ok: false, reason: "expired" };
+  // Tokens issued before purposes existed have none; treat that as a session
+  // token, which is what they were.
+  if ((claims.purpose ?? PURPOSE_SESSION) !== purpose) return { ok: false, reason: "wrong-purpose" };
   return { ok: true, claims };
 }
 

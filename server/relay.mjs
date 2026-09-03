@@ -37,7 +37,10 @@ import { Db } from "./db.mjs";
 import { Roster } from "./roster.mjs";
 import * as square from "./square.mjs";
 import * as email from "./email.mjs";
-import { bearerFrom, issueToken, newRoundId, usingEphemeralSecret, verifyToken } from "./auth.mjs";
+import {
+  bearerFrom, issueClaimToken, issueToken, newRoundId, PURPOSE_CLAIM,
+  usingEphemeralSecret, verifyToken,
+} from "./auth.mjs";
 import { deriveRound } from "./replay.mjs";
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -77,6 +80,13 @@ const TOURNAMENT = {
   teeOff: process.env.TOURNAMENT_TEE_OFF ?? "To be announced",
   contact: process.env.TOURNAMENT_CONTACT ?? "www.strategictitans.ca",
 };
+
+/**
+ * How long a freshly minted PIN stays claimable after payment. Long enough to
+ * cover a slow redirect and a distracted player, short enough that it is not
+ * sitting around.
+ */
+const CLAIM_HOLD_MS = 30 * 60 * 1000;
 
 const db = new Db(DATA_DIR);
 const roster = new Roster(db);
@@ -154,6 +164,42 @@ async function drainPending() {
 // ---------------------------------------------------------------------------
 
 /**
+ * PINs waiting to be collected from the payment-return screen.
+ *
+ * Email is one delivery path and it fails in ordinary ways — a typo, a spam
+ * folder, a bounce — leaving someone who has paid unable to play. Showing the
+ * credentials when Square sends them back gives a second, independent path.
+ *
+ * Held in memory only, never written to the database, and dropped after
+ * CLAIM_HOLD_MS. That keeps the property that matters: a leaked database still
+ * does not hand over the field's credentials, because the plaintext was never
+ * in it. A restart loses these, and the email remains the fallback.
+ */
+const claimable = new Map();
+
+function holdForClaim(playerId, pin) {
+  claimable.set(playerId, { pin, expiresAt: Date.now() + CLAIM_HOLD_MS });
+}
+
+function takeClaim(playerId) {
+  const held = claimable.get(playerId);
+  if (!held) return null;
+  if (held.expiresAt < Date.now()) {
+    claimable.delete(playerId);
+    return null;
+  }
+  return held.pin;
+}
+
+/** Drop anything nobody came back for, so this cannot grow unbounded. */
+setInterval(() => {
+  const now = Date.now();
+  for (const [playerId, held] of claimable) {
+    if (held.expiresAt < now) claimable.delete(playerId);
+  }
+}, CLAIM_HOLD_MS).unref();
+
+/**
  * Payment cleared: mint the PIN and mail it out.
  *
  * A failure here is loud, because it is the worst quiet failure in the system
@@ -163,6 +209,10 @@ async function drainPending() {
 async function issueCredentials(entry) {
   const issued = roster.issuePin(entry.playerId);
   if (!issued) return { sent: false, reason: "unknown-player" };
+
+  // Collectable from the payment-return screen for a short while, so a failed
+  // email is no longer the difference between playing and not.
+  holdForClaim(entry.playerId, issued.pin);
 
   const result = await email.sendCredentials({
     to: entry.email,
@@ -359,7 +409,9 @@ const server = createServer(async (req, res) => {
           email: playerEmail,
           amountCents: ENTRY_FEE_CENTS,
           currency: CURRENCY,
-          redirectUrl: `${PLAY_URL}?signup=complete`,
+          // Signed, and good for nothing but collecting these credentials —
+          // a bare player id here would let anyone harvest PINs by guessing.
+          redirectUrl: `${PLAY_URL}?claim=${encodeURIComponent(issueClaimToken(created.playerId))}`,
         });
       } catch (err) {
         // The player exists but has no way to pay; say so rather than leaving
@@ -403,6 +455,40 @@ const server = createServer(async (req, res) => {
 
       const issued = await issueCredentials(paid.entry);
       return json(res, 200, { ok: true, emailed: issued.sent });
+    }
+
+    // Collect credentials after paying.
+    //
+    // The player is sent here by Square with a signed ticket. It races the
+    // webhook that confirms the payment, and usually loses — so "not paid yet"
+    // is a normal answer the page polls on, not a failure.
+    if (req.method === "POST" && url.pathname === "/claim") {
+      const body = await readBody(req);
+      const verdict = verifyToken(String(body.claim ?? ""), PURPOSE_CLAIM);
+      if (!verdict.ok) {
+        log(`claim refused: ${verdict.reason}`);
+        return json(res, 403, { error: "invalid claim", reason: verdict.reason });
+      }
+
+      const player = roster.get(verdict.claims.playerId);
+      if (!player) return json(res, 404, { error: "unknown player" });
+      if (player.status !== "paid") {
+        // Square has not told us yet. Nothing is wrong; ask again shortly.
+        return json(res, 200, { paid: false, playerId: player.playerId, name: player.name });
+      }
+
+      const pin = takeClaim(player.playerId);
+      log(`claim ${player.playerId} (pin ${pin ? "shown" : "expired — email only"})`);
+      return json(res, 200, {
+        paid: true,
+        playerId: player.playerId,
+        name: player.name,
+        // Absent once the hold has lapsed or the relay restarted. The page says
+        // to use the email rather than pretending something went wrong.
+        pin: pin ?? undefined,
+        teeTime: player.teeTime,
+        tournament: TOURNAMENT,
+      });
     }
 
     // The door. Credentials are checked here and nowhere else, so this is

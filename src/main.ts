@@ -11,6 +11,7 @@ import { renderScorecard } from "./ui/scorecard.js";
 import { promptForPlayerCredentials, renderTournamentBoard, type PlayerCredentials } from "./ui/leaderboard.js";
 import { flushMoves, recordMove } from "./game/moveLog.js";
 import { isValidPlayerId, isValidPin, reportRound } from "./game/as400.js";
+import { relayEndpoint } from "./game/relay.js";
 import { createTournamentService, type JoinResult, type LeaderboardRow, type Player } from "./game/tournamentService.js";
 import { cardFace, cardLabel } from "./ui/cards.js";
 import { mountCourseBackground } from "./ui/courseBackground.js";
@@ -350,27 +351,88 @@ function showIntro(): void {
 }
 
 /**
- * Square returns the player here after checkout. Without this they land on the
- * menu with no sign anything happened, wondering whether they just paid.
+ * Square returns the player here after checkout, carrying a signed ticket.
+ *
+ * The credentials are shown on screen as well as emailed, because email is one
+ * delivery path and it fails in ordinary ways — a typo, a spam folder, a
+ * bounce — which would otherwise leave someone who has paid unable to play.
+ *
+ * The return usually beats the webhook confirming the payment, so "not yet" is
+ * expected and polled on rather than reported as a problem.
  */
-function showPaymentComplete(): void {
+async function showClaim(claim: string): Promise<void> {
   window.history.replaceState(null, "", window.location.pathname);
   showIntro();
+
+  let result: {
+    paid?: boolean; playerId?: string; name?: string; pin?: string; error?: string;
+  } = {};
+
+  // ~20 seconds of patience; a webhook that has not arrived by then is not
+  // about to, and the email is still coming.
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      const res = await fetch(relayEndpoint("/claim"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claim }),
+      });
+      result = await res.json();
+      if (result.paid) break;
+    } catch {
+      /* keep trying; the page below reports whatever we ended up with */
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+
   showOverlay((panel) => {
     const h2 = document.createElement("h2");
-    h2.textContent = "You're entered";
     const p = document.createElement("p");
-    p.textContent =
-      "Thank you — your entry is confirmed. We've emailed your Player ID and PIN; " +
-      "you'll need both to join. Check your inbox, and your spam folder if it isn't there.";
+
+    if (result.paid && result.pin && result.playerId) {
+      h2.textContent = "You're entered";
+      p.textContent = "Write these down — you need both to join. They're in your email too.";
+      panel.append(h2, p, credentialCard(result.playerId, result.pin));
+    } else if (result.paid) {
+      // Paid, but the PIN is no longer collectable here.
+      h2.textContent = "You're entered";
+      p.textContent =
+        "Thank you — your entry is confirmed. We've emailed your Player ID and PIN; " +
+        "you'll need both to join. Check your inbox, and your spam folder if it isn't there.";
+      panel.append(h2, p);
+    } else {
+      h2.textContent = "Payment is still confirming";
+      p.textContent =
+        "This can take a moment. Your Player ID and PIN will be emailed as soon as it clears — " +
+        "if nothing arrives, speak to a tournament official.";
+      panel.append(h2, p);
+    }
+
     const hint = document.createElement("p");
     hint.className = "end-hint";
     hint.textContent = "Press any key to continue";
-    panel.append(h2, p, hint);
+    panel.appendChild(hint);
   }, showIntro);
 }
 
+/** The two things a player has to keep, shown large enough to copy down. */
+function credentialCard(playerId: string, pin: string): HTMLElement {
+  const card = document.createElement("dl");
+  card.className = "credential-card";
+  const fields: [string, string][] = [["Player ID", playerId], ["PIN", pin]];
+  for (const [label, value] of fields) {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    card.append(dt, dd);
+  }
+  return card;
+}
+
+const params = new URLSearchParams(window.location.search);
+const claim = params.get("claim");
 const qrCreds = credentialsFromUrl();
-if (new URLSearchParams(window.location.search).get("signup") === "complete") showPaymentComplete();
+if (claim) void showClaim(claim);
 else if (qrCreds) void startTournament(qrCreds);
 else showIntro();

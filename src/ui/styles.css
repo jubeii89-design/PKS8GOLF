@@ -332,3 +332,83 @@ body[data-bg="golf"] .play-area { background: rgba(10, 28, 18, 0.42); box-shadow
   text-decoration: underline;
 }
 .signup-link:hover { color: #f2d67e; }
+
+/* --- Tournament standings board -------------------------------------------
+   Drawn rather than skinned, so it fits the field it actually has and shows
+   only columns this event can fill. */
+.lb-count {
+  margin: 2px 0 10px;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: #6b6248;
+  text-align: center;
+}
+
+.lb-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 15px;
+}
+
+.lb-table th {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  /* The header band is dark green, so its labels are the one light-on-dark
+     element on an otherwise cream board. */
+  color: #e6dcc0;
+  font-weight: 700;
+  text-align: left;
+  padding: 8px 10px;
+}
+.lb-table th:first-child { text-align: center; width: 3.5em; }
+.lb-table th:last-child { text-align: right; }
+
+.lb-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid rgba(63, 77, 40, 0.14);
+}
+
+.lb-table tr:last-child td { border-bottom: none; }
+
+.lb-rank {
+  text-align: center;
+  color: #6b6248;
+  font-variant-numeric: tabular-nums;
+}
+
+.lb-name {
+  color: #2f2a1c;
+  /* Names come from the roster and can be long; never let one break the row. */
+  max-width: 1px;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lb-score {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: #2f2a1c;
+}
+
+/* The player's own row, so they can find themselves at a glance. */
+.lb-table tr.lb-hi td {
+  background: rgba(63, 77, 40, 0.13);
+  box-shadow: inset 3px 0 0 #7a5c1e;
+}
+.lb-table tr.lb-hi .lb-name,
+.lb-table tr.lb-hi .lb-rank,
+.lb-table tr.lb-hi .lb-score {
+  color: #4a3a10;
+  font-weight: 800;
+}
+
+.lb-empty {
+  padding: 24px 0;
+  text-align: center;
+  color: #6b6248;
+  font-size: 14px;
+}

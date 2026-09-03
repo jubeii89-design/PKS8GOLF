@@ -219,7 +219,8 @@ if (usesSkin) {
   assert(await page.locator(".lb-skin-row.lb-hi").count() === 1, "the player's own row is on the board and highlighted");
 } else {
   assert(await page.locator(".lb-signboard").count() === 1, "standings render on the wooden signboard");
-  assert((await page.locator(".lb-title").innerText()) === "Round Standings", "signboard is titled Round Standings");
+  assert(/tournament standings/i.test(await page.locator(".lb-title").innerText()), "board is titled Tournament Standings");
+  assert(/player/i.test(await page.locator(".lb-count").innerText()), "the board says how many players have finished");
   assert(await page.locator(".lb-table tr.lb-hi").count() === 1, "the player's own row is highlighted");
   assert(await page.locator(".lb-table tr").count() > 2, "signboard lists the whole field");
 }

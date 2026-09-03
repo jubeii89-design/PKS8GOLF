@@ -7,21 +7,8 @@
 import type { LeaderboardRow } from "../game/tournamentService.js";
 import { isValidPlayerId, isValidPin } from "../game/as400.js";
 import { leaderboardSignSVG } from "./leaderboardSign.js";
-import { designOverride } from "./designOverrides.js";
 
 const medal = (rank: number) => (rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : String(rank));
-
-/**
- * Calibrated to public/assets/leaderboard.jpg specifically (1600×1093,
- * 10 pre-printed row slots numbered 1-10, NAME/SCORES columns) — measured by
- * pixel-analysing the actual image (row centers via white-pixel centroid,
- * column centers via equal 7-way division of the ruled box). A differently
- * laid-out replacement image would need these re-measured.
- */
-const LB_SKIN_ASPECT = "1600 / 1093";
-const LB_SKIN_ROWS_PCT = [32.2, 37.9, 43.5, 49.2, 54.7, 60.3, 65.5, 71.4, 76.9, 82.5];
-const LB_SKIN_NAME_X_PCT = 25;
-const LB_SKIN_SCORE_X_PCT = 50;
 
 /** Rows the wooden signboard shows per page. */
 export const TABLE_PAGE_SIZE = 20;
@@ -30,29 +17,6 @@ export const TABLE_PAGE_SIZE = 20;
 export function pageOfPlayer(rows: LeaderboardRow[], pageSize: number): number {
   const i = rows.findIndex((r) => r.isYou);
   return i < 0 ? 0 : Math.floor(i / pageSize);
-}
-
-/** Render the top rows positioned onto the leaderboard.jpg row/column grid. */
-function renderSkinBoard(container: HTMLElement, rows: LeaderboardRow[]): void {
-  container.replaceChildren();
-  rows.forEach((r, i) => {
-    const row = document.createElement("div");
-    row.className = "lb-skin-row" + (r.isYou ? " lb-hi" : "");
-    row.style.top = `${LB_SKIN_ROWS_PCT[i]}%`;
-
-    const name = document.createElement("span");
-    name.className = "lb-skin-name";
-    name.style.left = `${LB_SKIN_NAME_X_PCT}%`;
-    name.textContent = r.playerName; // untrusted → textContent
-
-    const score = document.createElement("span");
-    score.className = "lb-skin-score";
-    score.style.left = `${LB_SKIN_SCORE_X_PCT}%`;
-    score.textContent = String(r.score);
-
-    row.append(name, score);
-    container.appendChild(row);
-  });
 }
 
 /** Render the standings table into a container element. */
@@ -110,19 +74,29 @@ export interface TournamentBoardOpts {
 /** Default poll interval: a hundred players finishing over an hour is slow news. */
 export const BOARD_REFRESH_MS = 10_000;
 
-/** Full-screen tournament standings, shown as the wooden signpost. */
+/**
+ * Full-screen tournament standings.
+ *
+ * Drawn rather than skinned. The committed leaderboard.jpg is a *golf* board:
+ * it is titled GOLF LEADERBOARD, has columns this tournament has no data for
+ * (ID, MATCHES, WINRATE, REGION) that would sit permanently blank, and its ten
+ * pre-printed rows read as broken when eight of them are empty. Its printed
+ * row numbers also drift out of line with the rows positioned onto them,
+ * because the percentages were measured against that exact image.
+ *
+ * A board that draws its own rows has none of those problems: it says what
+ * this event is, shows only columns it can fill, and fits whatever size the
+ * field actually is.
+ */
 export function renderTournamentBoard(opts: TournamentBoardOpts): HTMLElement {
   const screen = document.createElement("div");
   screen.className = "screen leaderboard-screen";
-  const bg = designOverride("leaderboard");
 
   // Rows are replaced in place by the refresh below, so everything downstream
   // reads through this rather than closing over the initial array.
   let rows = opts.rows;
 
-  // The board shows as many rows as it has slots: the skin image has a fixed
-  // number of printed rows, the drawn signboard is free to show more.
-  const pageSize = bg ? LB_SKIN_ROWS_PCT.length : TABLE_PAGE_SIZE;
+  const pageSize = TABLE_PAGE_SIZE;
   let pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
   let page = pageOfPlayer(rows, pageSize);
 
@@ -216,31 +190,11 @@ export function renderTournamentBoard(opts: TournamentBoardOpts): HTMLElement {
         pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
         page = Math.min(page, pageCount - 1);
         redraw();
+        setCount();
       } catch {
         /* the next tick can try again */
       }
     }, every);
-  }
-
-  if (bg) {
-    // Custom overlay: real name/score data positioned onto the uploaded
-    // image's own row/column grid (see LB_SKIN_* above).
-    const wrap = document.createElement("div");
-    wrap.className = "lb-skin-wrap";
-
-    const board = document.createElement("div");
-    board.className = "lb-skin-board";
-    board.style.aspectRatio = LB_SKIN_ASPECT;
-    board.style.backgroundImage = `url("${bg}")`;
-    wrap.appendChild(board);
-
-    mountPager(wrap, board, renderSkinBoard);
-    wrap.appendChild(notes());
-    back.classList.add("lb-skin-back");
-    wrap.appendChild(back);
-    screen.appendChild(wrap);
-    startRefreshing();
-    return screen;
   }
 
   const signboard = document.createElement("div");
@@ -256,8 +210,19 @@ export function renderTournamentBoard(opts: TournamentBoardOpts): HTMLElement {
 
   const title = document.createElement("h2");
   title.className = "lb-title";
-  title.textContent = "Round Standings";
+  title.textContent = "Tournament Standings";
   panel.appendChild(title);
+
+  const count = document.createElement("p");
+  count.className = "lb-count";
+  const setCount = () => {
+    count.textContent =
+      rows.length === 0
+        ? "No rounds finished yet"
+        : `${rows.length} ${rows.length === 1 ? "player has" : "players have"} finished`;
+  };
+  setCount();
+  panel.appendChild(count);
   panel.appendChild(notes());
 
   const boardBox = document.createElement("div");

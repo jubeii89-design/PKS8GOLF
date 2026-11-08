@@ -174,6 +174,12 @@ assert(await page.locator(".grid").count() === 2, "two grids render");
 const preplaced = await page.locator(".board .card:not(.card-empty)").count();
 assert(preplaced === 6, `6 cards auto-placed at start (got ${preplaced})`);
 assert(await page.locator(".pass-btn").isVisible(), "PASS button visible");
+// A tournament round is scored and ranked, but not while you are playing it:
+// the field appears once, after the round, and never over the board.
+assert(
+  await page.locator(".lb-table, .leaderboard-screen").count() === 0,
+  "no leaderboard on screen during a tournament round",
+);
 const remainStart = await page.locator(".remain-value").innerText();
 assert(remainStart === "41", `cards remaining starts at 41 (got ${remainStart})`);
 
@@ -336,6 +342,10 @@ const movesBeforePractice = moved.length;
 await page.locator(".mode-btn", { hasText: "Practice" }).click(); // Practice (Golf scoring)
 await page.waitForSelector(".board");
 assert(await page.getAttribute("body", "data-bg") === "golf", "practice uses golf scoring");
+assert(
+  await page.locator(".lb-table, .leaderboard-screen").count() === 0,
+  "no leaderboard on screen during a practice round",
+);
 await fastPlayToEnd();
 assert(await page.locator(".overlay .end-panel").count() === 1, "practice shows its own scorecard at the end");
 await page.keyboard.press("Enter");

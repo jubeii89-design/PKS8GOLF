@@ -57,6 +57,11 @@ check(await page.locator(".board .card:not(.card-empty)").count() === 6,
 check(await page.evaluate(() => document.body.dataset.bg) === "poker",
   "it is the PokerStr8ts round, not the golf one");
 
+// Nothing ranks you against anyone while you are still playing. This holds in
+// every mode; it is asserted here and in smoke.mjs for practice and tournament.
+check(await page.locator(".lb-table, .leaderboard-screen, .lb-link").count() === 0,
+  "no leaderboard on screen during the round");
+
 // Play it out: take the first legal cell, else pass. A finished round is the
 // real test — a menu entry that starts something unplayable is no restoration.
 for (let i = 0; i < 260; i++) {
@@ -71,6 +76,8 @@ await page.waitForTimeout(400);
 check(await page.locator(".board .card:not(.card-empty)").count() === 36,
   "all 36 cells filled — the round plays through to completion");
 check(await page.locator(".overlay .end-panel").count() === 1, "it shows its own scorecard at the end");
+check(await page.locator(".lb-table, .leaderboard-screen").count() === 0,
+  "and no leaderboard at the end either — a solo score is not ranked anywhere");
 check(!/player id/i.test(await page.locator("body").innerText()),
   "finished without ever demanding credentials");
 

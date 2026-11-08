@@ -26,7 +26,8 @@
     "sum:check": "npm run build:server && node scripts/sum-check.mjs",
     "resilience:check": "npm run build:server && node scripts/resilience-check.mjs",
     "admin:check": "npm run build:server && node scripts/admin-check.mjs",
-    "solo:check": "node scripts/solo-check.mjs"
+    "solo:check": "node scripts/solo-check.mjs",
+    "singlefile": "node scripts/build-singlefile.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.61.1",

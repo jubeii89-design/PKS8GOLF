@@ -2,7 +2,7 @@
   "name": "pokerst8ts",
   "version": "1.0.0",
   "private": true,
-  "description": "PokerSt8ts \u2014 a solo card/board game by Strategic Titans",
+  "description": "PokerSt8ts — a solo card/board game by Strategic Titans",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -25,7 +25,8 @@
     "decode": "npm run build:server && node scripts/decode-record.mjs",
     "sum:check": "npm run build:server && node scripts/sum-check.mjs",
     "resilience:check": "npm run build:server && node scripts/resilience-check.mjs",
-    "admin:check": "npm run build:server && node scripts/admin-check.mjs"
+    "admin:check": "npm run build:server && node scripts/admin-check.mjs",
+    "solo:check": "node scripts/solo-check.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.61.1",

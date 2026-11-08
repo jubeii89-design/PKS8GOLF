@@ -111,7 +111,9 @@ assert(pokerBgIntro < 0.05, `poker table hidden on intro (opacity ${pokerBgIntro
 await page.screenshot({ path: `${OUT}/bg-intro.png` });
 
 // --- Golf mode shows the course full-strength ---
-await page.locator(".mode-btn:not(.primary)").click(); // Golf
+// Named, not positional: there are two non-primary modes now (solo
+// PokerStr8ts and Practice), so ":not(.primary)" is no longer unambiguous.
+await page.locator(".mode-btn", { hasText: "Practice" }).click(); // Golf scoring
 await page.waitForSelector(".board");
 assert(await page.getAttribute("body", "data-bg") === "golf", "golf sets body[data-bg=golf]");
 await page.waitForTimeout(1200); // let the opacity transition settle
@@ -139,7 +141,13 @@ await page.route("**/api/moves", async (route) => {
 await page.reload({ waitUntil: "networkidle" });
 assert(
   (await page.locator(".mode-btn.primary .mode-label").innerText()) === "Tournament",
-  "Tournament has replaced PokerStr8ts as the primary button",
+  "Tournament is the primary button",
+);
+// Tournament leads, but solo PokerStr8ts must remain a game you can simply
+// play without a player ID. The tournament work must not swallow it.
+assert(
+  (await page.locator(".mode-btn .mode-label").allInnerTexts()).includes("PokerStr8ts"),
+  "solo PokerStr8ts is still offered on the menu",
 );
 await page.locator(".mode-btn.primary").click();
 await page.waitForSelector(".code-prompt");
@@ -319,13 +327,13 @@ await page.locator(".lb-back").click(); // Done → back to intro
 // --- Practice round: Golf scoring, and nothing is recorded anywhere ---
 await page.waitForSelector(".mode-select");
 assert(
-  (await page.locator(".mode-btn:not(.primary) .mode-label").innerText()) === "Practice",
-  "Golf is presented as Practice alongside Tournament",
+  (await page.locator(".mode-btn .mode-label").allInnerTexts()).join(",") === "Tournament,PokerStr8ts,Practice",
+  "the menu offers Tournament, solo PokerStr8ts and Practice, in that order",
 );
 assert(await page.locator(".lb-link").count() === 0, "no leaderboard link — practice scores are not kept");
 const movesBeforePractice = moved.length;
 
-await page.locator(".mode-btn:not(.primary)").click(); // Practice (Golf scoring)
+await page.locator(".mode-btn", { hasText: "Practice" }).click(); // Practice (Golf scoring)
 await page.waitForSelector(".board");
 assert(await page.getAttribute("body", "data-bg") === "golf", "practice uses golf scoring");
 await fastPlayToEnd();

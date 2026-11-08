@@ -52,6 +52,10 @@ export function renderIntro(
     t.addEventListener("click", () => onTournament());
     modes.appendChild(t);
   }
+  // The original solo game, unchanged: no credentials, no seed from anyone, no
+  // score reported. Tournament mode scores the same way, but a player who just
+  // wants to play PokerStr8ts must not have to enter a player ID to do it.
+  modes.appendChild(makeBtn("PokerStr8ts", "Score points per hand — chase a high round.", GameMode.PokerStraightsMode));
   modes.appendChild(makeBtn("Practice", "Golf scoring — warm up before you tee off.", GameMode.GolfMode));
 
   screen.append(home, presents, crest(), wordmark, tagline, modes);

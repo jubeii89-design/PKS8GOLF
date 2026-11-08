@@ -1,0 +1,150 @@
+/* Signup page. Borrows the game's palette so the two feel like one event. */
+
+#signup {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px 16px;
+  box-sizing: border-box;
+}
+
+.signup-card {
+  width: 100%;
+  max-width: 440px;
+  background: rgba(12, 40, 24, 0.93);
+  border: 1px solid #2c6b42;
+  border-radius: 14px;
+  padding: 28px 26px 22px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  color: #eaf3ec;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.signup-eyebrow {
+  margin: 0 0 6px;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #9fbfa8;
+}
+
+.signup-title {
+  margin: 0 0 6px;
+  font-size: 24px;
+  line-height: 1.2;
+  color: #e8c766;
+}
+
+.signup-sub {
+  margin: 0 0 20px;
+  font-size: 14px;
+  color: #9fbfa8;
+}
+
+.signup-details {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  margin: 0 0 22px;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 9px;
+  font-size: 14px;
+}
+
+.signup-details dt {
+  color: #9fbfa8;
+}
+
+.signup-details dd {
+  margin: 0;
+  text-align: right;
+}
+
+.signup-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.signup-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.signup-label {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #9fbfa8;
+}
+
+.signup-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  font-size: 16px; /* 16px stops iOS zooming the page on focus */
+  color: #eaf3ec;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid #2c6b42;
+  border-radius: 8px;
+  font-family: inherit;
+}
+
+.signup-input:focus {
+  outline: none;
+  border-color: #e8c766;
+  box-shadow: 0 0 0 3px rgba(232, 199, 102, 0.18);
+}
+
+.signup-note {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #9fbfa8;
+}
+
+.signup-error {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #ffd9d9;
+  background: rgba(150, 40, 40, 0.35);
+  border: 1px solid #a44;
+  border-radius: 8px;
+}
+
+.signup-submit {
+  margin-top: 4px;
+  padding: 14px;
+  font-size: 16px;
+  font-weight: 700;
+  font-family: inherit;
+  color: #0d2818;
+  background: #e8c766;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.signup-submit:hover:not(:disabled) {
+  background: #f2d67e;
+}
+
+.signup-submit:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.signup-back {
+  display: block;
+  margin-top: 18px;
+  text-align: center;
+  font-size: 13px;
+  color: #9fbfa8;
+}

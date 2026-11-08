@@ -1,174 +1,201 @@
 /**
- * Leaderboard UI: the board screen (Poker/Golf toggle) and the name-entry
- * modal. Player-entered names are rendered as textContent (never innerHTML)
- * since they are untrusted display text.
+ * Tournament board UI: the full-screen standings signboard and the player ID
+ * + PIN join modal. Player names come from the backend and are rendered as
+ * textContent (never innerHTML) since they are untrusted display text.
  */
 
-import { GameMode } from "../engine/index.js";
-import { type Leaderboard, type LeaderboardEntry } from "../game/leaderboard.js";
+import type { LeaderboardRow } from "../game/tournamentService.js";
+import { isValidPlayerId, isValidPin } from "../game/as400.js";
+import { SIGNUP_URL } from "../game/relay.js";
 import { leaderboardSignSVG } from "./leaderboardSign.js";
-import { designOverride } from "./designOverrides.js";
-
-const NAME_KEY = "pokerst8ts.playerName";
-
-function lastName(): string {
-  try {
-    return (typeof localStorage !== "undefined" && localStorage.getItem(NAME_KEY)) || "";
-  } catch {
-    return "";
-  }
-}
-function rememberName(name: string): void {
-  try {
-    if (typeof localStorage !== "undefined") localStorage.setItem(NAME_KEY, name);
-  } catch {
-    /* ignore */
-  }
-}
 
 const medal = (rank: number) => (rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : String(rank));
 
-/**
- * Calibrated to public/assets/leaderboard.jpg specifically (1600×1093,
- * 10 pre-printed row slots numbered 1-10, NAME/SCORES columns) — measured by
- * pixel-analysing the actual image (row centers via white-pixel centroid,
- * column centers via equal 7-way division of the ruled box). A differently
- * laid-out replacement image would need these re-measured.
- */
-const LB_SKIN_ASPECT = "1600 / 1093";
-const LB_SKIN_ROWS_PCT = [32.2, 37.9, 43.5, 49.2, 54.7, 60.3, 65.5, 71.4, 76.9, 82.5];
-const LB_SKIN_NAME_X_PCT = 25;
-const LB_SKIN_SCORE_X_PCT = 50;
+/** Rows the wooden signboard shows per page. */
+export const TABLE_PAGE_SIZE = 20;
 
-/** Render up to 10 entries positioned onto the leaderboard.jpg row/column grid. */
-function renderSkinBoard(container: HTMLElement, entries: LeaderboardEntry[], highlight?: LeaderboardEntry): void {
-  container.replaceChildren();
-  entries.slice(0, LB_SKIN_ROWS_PCT.length).forEach((e, i) => {
-    const isHi = highlight && e.name === highlight.name && e.score === highlight.score && e.date === highlight.date;
-    const row = document.createElement("div");
-    row.className = "lb-skin-row" + (isHi ? " lb-hi" : "");
-    row.style.top = `${LB_SKIN_ROWS_PCT[i]}%`;
-
-    const name = document.createElement("span");
-    name.className = "lb-skin-name";
-    name.style.left = `${LB_SKIN_NAME_X_PCT}%`;
-    name.textContent = e.name; // untrusted → textContent
-
-    const score = document.createElement("span");
-    score.className = "lb-skin-score";
-    score.style.left = `${LB_SKIN_SCORE_X_PCT}%`;
-    score.textContent = String(e.score);
-
-    row.append(name, score);
-    container.appendChild(row);
-  });
+/** Page holding the player, so they always land on their own page. */
+export function pageOfPlayer(rows: LeaderboardRow[], pageSize: number): number {
+  const i = rows.findIndex((r) => r.isYou);
+  return i < 0 ? 0 : Math.floor(i / pageSize);
 }
 
-/** Render the board for one mode into a container element. */
-function renderBoard(
-  container: HTMLElement,
-  entries: LeaderboardEntry[],
-  mode: GameMode,
-  highlight?: LeaderboardEntry,
-): void {
+/** Render the standings table into a container element. */
+function renderBoard(container: HTMLElement, rows: LeaderboardRow[]): void {
   container.replaceChildren();
-  if (entries.length === 0) {
+  if (rows.length === 0) {
     const empty = document.createElement("p");
     empty.className = "lb-empty";
-    empty.textContent = "No scores yet — be the first.";
+    empty.textContent = "No scores in yet.";
     container.appendChild(empty);
     return;
   }
   const table = document.createElement("table");
   table.className = "lb-table";
   const head = document.createElement("tr");
-  head.innerHTML = `<th>#</th><th>Name</th><th>${mode === GameMode.GolfMode ? "Strokes" : "Points"}</th><th>Date</th>`;
+  head.innerHTML = `<th>#</th><th>Player</th><th>Points</th>`;
   table.appendChild(head);
-  entries.forEach((e, i) => {
+  for (const r of rows) {
     const tr = document.createElement("tr");
-    const isHi =
-      highlight && e.name === highlight.name && e.score === highlight.score && e.date === highlight.date;
-    if (isHi) tr.className = "lb-hi";
+    if (r.isYou) tr.className = "lb-hi";
     const rankTd = document.createElement("td");
     rankTd.className = "lb-rank";
-    rankTd.textContent = medal(i + 1);
+    rankTd.textContent = medal(r.rank);
     const nameTd = document.createElement("td");
     nameTd.className = "lb-name";
-    nameTd.textContent = e.name; // untrusted → textContent
+    nameTd.textContent = r.playerName; // untrusted → textContent
     const scoreTd = document.createElement("td");
     scoreTd.className = "lb-score";
-    scoreTd.textContent = String(e.score);
-    const dateTd = document.createElement("td");
-    dateTd.className = "lb-date";
-    dateTd.textContent = e.date;
-    tr.append(rankTd, nameTd, scoreTd, dateTd);
+    scoreTd.textContent = String(r.score);
+    tr.append(rankTd, nameTd, scoreTd);
     table.appendChild(tr);
-  });
+  }
   container.appendChild(table);
 }
 
-export interface LeaderboardScreenOpts {
-  leaderboard: Leaderboard;
-  mode: GameMode;
-  highlight?: LeaderboardEntry;
+export interface TournamentBoardOpts {
+  rows: LeaderboardRow[];
+  /** Shown under the title, e.g. "3rd of 24". */
+  subtitle?: string;
+  /** Warning shown when the round score has not reached the server yet. */
+  warning?: string;
+  /** True when the rows are mock data and must not be read as authoritative. */
+  mock?: boolean;
+  /**
+   * Fetches the current standings. When given, the board re-reads them on a
+   * timer so a player watching it sees the field fill in behind them rather
+   * than a snapshot frozen at the moment they finished.
+   */
+  refresh?: () => Promise<LeaderboardRow[]>;
+  /** How often to re-read. Long enough to be cheap, short enough to feel live. */
+  refreshMs?: number;
   onBack: () => void;
 }
 
-/** Full leaderboard screen with a Poker/Golf toggle, shown as a wooden signpost. */
-export function renderLeaderboardScreen(opts: LeaderboardScreenOpts): HTMLElement {
+/** Default poll interval: a hundred players finishing over an hour is slow news. */
+export const BOARD_REFRESH_MS = 10_000;
+
+/**
+ * Full-screen tournament standings.
+ *
+ * Drawn rather than skinned. The committed leaderboard.jpg is a *golf* board:
+ * it is titled GOLF LEADERBOARD, has columns this tournament has no data for
+ * (ID, MATCHES, WINRATE, REGION) that would sit permanently blank, and its ten
+ * pre-printed rows read as broken when eight of them are empty. Its printed
+ * row numbers also drift out of line with the rows positioned onto them,
+ * because the percentages were measured against that exact image.
+ *
+ * A board that draws its own rows has none of those problems: it says what
+ * this event is, shows only columns it can fill, and fits whatever size the
+ * field actually is.
+ */
+export function renderTournamentBoard(opts: TournamentBoardOpts): HTMLElement {
   const screen = document.createElement("div");
   screen.className = "screen leaderboard-screen";
-  const bg = designOverride("leaderboard");
 
-  let mode = opts.mode;
-  const toggle = document.createElement("div");
-  toggle.className = "lb-toggle";
-  const pokerBtn = document.createElement("button");
-  const golfBtn = document.createElement("button");
-  pokerBtn.textContent = "PokerStr8ts";
-  golfBtn.textContent = "Golf";
-  toggle.append(pokerBtn, golfBtn);
+  // Rows are replaced in place by the refresh below, so everything downstream
+  // reads through this rather than closing over the initial array.
+  let rows = opts.rows;
+
+  const pageSize = TABLE_PAGE_SIZE;
+  let pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+  let page = pageOfPlayer(rows, pageSize);
 
   const back = document.createElement("button");
   back.className = "mode-btn primary lb-back";
-  back.innerHTML = `<span class="mode-label">Back</span>`;
+  back.innerHTML = `<span class="mode-label">Done</span>`;
   back.addEventListener("click", opts.onBack);
 
-  if (bg) {
-    // Custom overlay: real name/score data positioned onto the uploaded
-    // image's own row/column grid (see LB_SKIN_* above), instead of a
-    // generic table drawn on top of it.
-    const wrap = document.createElement("div");
-    wrap.className = "lb-skin-wrap";
-    toggle.classList.add("lb-skin-toggle");
-    wrap.appendChild(toggle);
+  const notes = () => {
+    const frag = document.createDocumentFragment();
+    if (opts.subtitle) {
+      const sub = document.createElement("p");
+      sub.className = "lb-subtitle";
+      sub.textContent = opts.subtitle;
+      frag.appendChild(sub);
+    }
+    if (opts.warning) {
+      const warn = document.createElement("p");
+      warn.className = "lb-warning";
+      warn.textContent = opts.warning;
+      frag.appendChild(warn);
+    }
+    if (opts.mock) {
+      const note = document.createElement("p");
+      note.className = "lb-mock";
+      note.textContent = "DEMO DATA — not a real tournament field";
+      frag.appendChild(note);
+    }
+    return frag;
+  };
 
-    const board = document.createElement("div");
-    board.className = "lb-skin-board";
-    board.style.aspectRatio = LB_SKIN_ASPECT;
-    board.style.backgroundImage = `url("${bg}")`;
-    wrap.appendChild(board);
+  // Prev/next arrows, only when the field does not fit on one page.
+  const pager = document.createElement("div");
+  pager.className = "lb-pager";
+  const prev = document.createElement("button");
+  prev.className = "lb-arrow";
+  prev.textContent = "‹";
+  prev.setAttribute("aria-label", "previous page");
+  const next = document.createElement("button");
+  next.className = "lb-arrow";
+  next.textContent = "›";
+  next.setAttribute("aria-label", "next page");
+  const pageLabel = document.createElement("span");
+  pageLabel.className = "lb-page-label";
+  pager.append(prev, pageLabel, next);
 
-    back.classList.add("lb-skin-back");
-    wrap.appendChild(back);
-    screen.appendChild(wrap);
+  const draw = (into: HTMLElement, render: (el: HTMLElement, rows: LeaderboardRow[]) => void) => {
+    render(into, rows.slice(page * pageSize, (page + 1) * pageSize));
+    pageLabel.textContent = `Page ${page + 1} of ${pageCount}`;
+    prev.disabled = page === 0;
+    next.disabled = page >= pageCount - 1;
+  };
 
-    const refresh = async () => {
-      pokerBtn.classList.toggle("active", mode === GameMode.PokerStraightsMode);
-      golfBtn.classList.toggle("active", mode === GameMode.GolfMode);
-      const entries = await opts.leaderboard.top(mode);
-      renderSkinBoard(board, entries, mode === opts.mode ? opts.highlight : undefined);
-    };
-    pokerBtn.addEventListener("click", () => {
-      mode = GameMode.PokerStraightsMode;
-      void refresh();
-    });
-    golfBtn.addEventListener("click", () => {
-      mode = GameMode.GolfMode;
-      void refresh();
-    });
-    void refresh();
-    return screen;
+  // Set by mountPager so the refresh below can redraw whichever board (skinned
+  // or drawn) actually got mounted.
+  let redraw: () => void = () => {};
+
+  const mountPager = (parent: HTMLElement, into: HTMLElement, render: (el: HTMLElement, rows: LeaderboardRow[]) => void) => {
+    redraw = () => draw(into, render);
+    draw(into, render);
+    if (pageCount > 1) {
+      prev.addEventListener("click", () => {
+        if (page > 0) { page--; draw(into, render); }
+      });
+      next.addEventListener("click", () => {
+        if (page < pageCount - 1) { page++; draw(into, render); }
+      });
+      parent.appendChild(pager);
+    }
+  };
+
+  /**
+   * Re-read the standings while the board is on screen.
+   *
+   * The player's own page is held rather than recomputed, so the board does not
+   * jump under them as other people finish. Polling stops when the board is
+   * removed, so leaving the screen ends it.
+   */
+  function startRefreshing(): void {
+    if (!opts.refresh) return;
+    const every = opts.refreshMs ?? BOARD_REFRESH_MS;
+    const timer = setInterval(async () => {
+      if (!screen.isConnected) {
+        clearInterval(timer);
+        return;
+      }
+      try {
+        const next = await opts.refresh!();
+        if (next.length === 0) return; // a blip is not news; keep what we have
+        rows = next;
+        pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+        page = Math.min(page, pageCount - 1);
+        redraw();
+        setCount();
+      } catch {
+        /* the next tick can try again */
+      }
+    }, every);
   }
 
   const signboard = document.createElement("div");
@@ -184,120 +211,111 @@ export function renderLeaderboardScreen(opts: LeaderboardScreenOpts): HTMLElemen
 
   const title = document.createElement("h2");
   title.className = "lb-title";
-  title.textContent = "Leaderboard";
+  title.textContent = "Tournament Standings";
   panel.appendChild(title);
-  panel.appendChild(toggle);
+
+  const count = document.createElement("p");
+  count.className = "lb-count";
+  const setCount = () => {
+    count.textContent =
+      rows.length === 0
+        ? "No rounds finished yet"
+        : `${rows.length} ${rows.length === 1 ? "player has" : "players have"} finished`;
+  };
+  setCount();
+  panel.appendChild(count);
+  panel.appendChild(notes());
 
   const boardBox = document.createElement("div");
   boardBox.className = "lb-board";
   panel.appendChild(boardBox);
 
-  const refresh = async () => {
-    pokerBtn.classList.toggle("active", mode === GameMode.PokerStraightsMode);
-    golfBtn.classList.toggle("active", mode === GameMode.GolfMode);
-    const entries = await opts.leaderboard.top(mode);
-    renderBoard(boardBox, entries, mode, mode === opts.mode ? opts.highlight : undefined);
-  };
-  pokerBtn.addEventListener("click", () => {
-    mode = GameMode.PokerStraightsMode;
-    void refresh();
-  });
-  golfBtn.addEventListener("click", () => {
-    mode = GameMode.GolfMode;
-    void refresh();
-  });
-
+  mountPager(panel, boardBox, renderBoard);
   panel.appendChild(back);
   signboard.appendChild(panel);
   screen.appendChild(signboard);
-  void refresh();
+  startRefreshing();
   return screen;
 }
 
-/**
- * Modal asking for the player's name after a qualifying finish. Resolves with
- * the entered name, or null if skipped. Remembers the last name used.
- */
-export function promptForName(rank: number): Promise<string | null> {
-  return new Promise((resolve) => {
-    const overlay = document.createElement("div");
-    overlay.className = "overlay";
-    const panel = document.createElement("div");
-    panel.className = "end-panel name-prompt";
-
-    const h = document.createElement("h2");
-    h.textContent = rank === 1 ? "New high score! 🏆" : `Top ${rank <= 3 ? rank : 20} finish!`;
-    const p = document.createElement("p");
-    p.textContent = "Enter your name for the leaderboard:";
-
-    const input = document.createElement("input");
-    input.className = "name-input";
-    input.maxLength = 12;
-    input.value = lastName();
-    input.placeholder = "Your name";
-
-    const row = document.createElement("div");
-    row.className = "name-actions";
-    const save = document.createElement("button");
-    save.className = "mode-btn primary";
-    save.innerHTML = `<span class="mode-label">Save</span>`;
-    const skip = document.createElement("button");
-    skip.className = "mode-btn";
-    skip.innerHTML = `<span class="mode-label">Skip</span>`;
-    row.append(save, skip);
-
-    const finish = (value: string | null) => {
-      overlay.remove();
-      resolve(value);
-    };
-    save.addEventListener("click", () => {
-      const v = input.value.trim();
-      if (v) rememberName(v);
-      finish(v || null);
-    });
-    skip.addEventListener("click", () => finish(null));
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") save.click();
-    });
-
-    panel.append(h, p, input, row);
-    overlay.appendChild(panel);
-    document.getElementById("app")!.appendChild(overlay);
-    input.focus();
-    input.select();
-  });
+export interface PlayerCredentials {
+  playerId: string;
+  pin: string;
 }
 
-/** Modal asking whether to play again. Resolves true (Yes) or false (No). */
-export function promptPlayAgain(): Promise<boolean> {
+/**
+ * Tournament entry: asks for the player's ID and PIN. Resolves with both, or
+ * null if they back out. Start stays disabled until both fields are valid.
+ */
+export function promptForPlayerCredentials(): Promise<PlayerCredentials | null> {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "overlay";
     const panel = document.createElement("div");
-    panel.className = "end-panel play-again-prompt";
+    // name-prompt carries the shared input styling; code-prompt is the hook.
+    panel.className = "end-panel name-prompt code-prompt";
 
     const h = document.createElement("h2");
-    h.textContent = "Play again?";
+    h.textContent = "Tournament";
+    const p = document.createElement("p");
+    p.textContent = "Enter your player ID and PIN:";
+
+    const idInput = document.createElement("input");
+    idInput.className = "name-input";
+    idInput.autocomplete = "off";
+    idInput.maxLength = 15;
+    idInput.placeholder = "Player ID";
+
+    const pinInput = document.createElement("input");
+    pinInput.className = "name-input";
+    pinInput.inputMode = "numeric";
+    pinInput.autocomplete = "off";
+    pinInput.maxLength = 6;
+    pinInput.placeholder = "6-digit PIN";
 
     const row = document.createElement("div");
     row.className = "name-actions";
-    const yes = document.createElement("button");
-    yes.className = "mode-btn primary";
-    yes.innerHTML = `<span class="mode-label">Yes</span>`;
-    const no = document.createElement("button");
-    no.className = "mode-btn";
-    no.innerHTML = `<span class="mode-label">No</span>`;
-    row.append(yes, no);
+    const start = document.createElement("button");
+    start.className = "mode-btn primary";
+    start.innerHTML = `<span class="mode-label">Start</span>`;
+    const cancel = document.createElement("button");
+    cancel.className = "mode-btn";
+    cancel.innerHTML = `<span class="mode-label">Cancel</span>`;
+    row.append(start, cancel);
 
-    const finish = (value: boolean) => {
+    // PIN is digits only; Start unlocks once both fields validate.
+    const sync = () => {
+      pinInput.value = pinInput.value.replace(/\D/g, "");
+      start.disabled = !isValidPlayerId(idInput.value) || !isValidPin(pinInput.value);
+    };
+    idInput.addEventListener("input", sync);
+    pinInput.addEventListener("input", sync);
+    sync();
+
+    const finish = (value: PlayerCredentials | null) => {
       overlay.remove();
       resolve(value);
     };
-    yes.addEventListener("click", () => finish(true));
-    no.addEventListener("click", () => finish(false));
+    start.addEventListener("click", () => {
+      if (!start.disabled) finish({ playerId: idInput.value.trim(), pin: pinInput.value.trim() });
+    });
+    cancel.addEventListener("click", () => finish(null));
+    idInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") start.click();
+    });
+    pinInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") start.click();
+    });
 
-    panel.append(h, row);
+    // The player who has not signed up yet ends up here; give them the way out.
+    const help = document.createElement("a");
+    help.className = "signup-link";
+    help.href = SIGNUP_URL;
+    help.textContent = "Don't have a Player ID? Sign up";
+
+    panel.append(h, p, idInput, pinInput, row, help);
     overlay.appendChild(panel);
     document.getElementById("app")!.appendChild(overlay);
+    idInput.focus();
   });
 }

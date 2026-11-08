@@ -68,14 +68,41 @@ function startPlayer(audio: HTMLAudioElement, target: HTMLElement): void {
   });
   target.appendChild(btn);
 
-  const tryPlay = () => void audio.play().catch(() => {});
-  tryPlay();
-  // Browsers block autoplay-with-sound until a user gesture; retry on the first one.
-  const onGesture = () => {
-    tryPlay();
-    document.removeEventListener("pointerdown", onGesture);
-    document.removeEventListener("keydown", onGesture);
+  // Browsers block audio until a real user gesture, so the first play() is
+  // expected to fail. The trap is giving up after one attempt: play() settles
+  // asynchronously, so a listener removed straight after calling it is gone
+  // before anyone knows whether it worked — and the track never starts.
+  //
+  // So: ask whether it is actually playing, and keep trying on each gesture
+  // until it is. A timer cannot help here. The browser does not ask whether
+  // playback is permitted, it asks whether the call is inside a trusted
+  // gesture, which a setInterval callback never is.
+  const isPlaying = () => !audio.paused && !audio.ended;
+
+  const tryPlay = () => {
+    // A mute the player chose is not a problem to be fixed.
+    if (audio.muted || isPlaying()) return;
+    void audio.play().catch(() => {});
   };
-  document.addEventListener("pointerdown", onGesture, { once: true });
-  document.addEventListener("keydown", onGesture, { once: true });
+
+  const stopChasing = () => {
+    document.removeEventListener("pointerdown", tryPlay);
+    document.removeEventListener("keydown", tryPlay);
+  };
+  const startChasing = () => {
+    document.addEventListener("pointerdown", tryPlay);
+    document.addEventListener("keydown", tryPlay);
+  };
+
+  // Stand down only on proof — the event the browser fires when sound is
+  // genuinely coming out, not on a promise that resolved.
+  audio.addEventListener("playing", stopChasing);
+  // And pick it up again if it stops later: a backgrounded tab, another app
+  // taking audio focus, a device waking up.
+  audio.addEventListener("pause", () => {
+    if (!audio.ended) startChasing();
+  });
+
+  tryPlay();
+  startChasing();
 }
